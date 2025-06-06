@@ -4,7 +4,6 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "ts-node index.ts",
     "like": "ts-node like_imran_tweet.ts",
     "pti-action": "ts-node pti_comment_retweet.ts",
     "comment": "ts-node pti_comment.ts",
@@ -21,7 +20,6 @@
   "description": "",
   "dependencies": {
     "dotenv": "^16.5.0",
-    "playwright": "^1.52.0",
     "puppeteer-core": "^24.10.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3"
