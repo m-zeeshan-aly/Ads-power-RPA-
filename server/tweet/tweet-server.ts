@@ -8,7 +8,7 @@ import {
   postCustomTweetHuman, 
   connectToBrowser, 
   getWebSocketUrl 
-} from '../custom_tweet_human';
+} from './custom_tweet_human';
 
 // Server configuration
 const PORT = process.env.PORT || 3000;
@@ -347,3 +347,16 @@ if (require.main === module) {
 }
 
 export { startServer, requestHandler };
+
+
+// usage 
+// # Start server
+// npm run http-server
+
+// # Test endpoints
+// npm run test-http
+
+// # Post a tweet
+// curl -X POST http://localhost:3001/tweet \
+//   -H "Content-Type: application/json" \
+//   -d '{"message": "Hello from automation!", "hashtags": ["test", "automation"]}'

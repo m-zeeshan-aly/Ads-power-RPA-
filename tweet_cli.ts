@@ -1,6 +1,6 @@
 // tweet_cli.ts
 import * as readline from 'readline';
-import { TweetInput, postCustomTweetHuman, connectToBrowser, getWebSocketUrl, BehaviorType, HUMAN_BEHAVIORS } from './custom_tweet_human';
+import { TweetInput, postCustomTweetHuman, connectToBrowser, getWebSocketUrl, BehaviorType, HUMAN_BEHAVIORS } from './server/tweet/custom_tweet_human';
 
 const rl = readline.createInterface({
   input: process.stdin,
