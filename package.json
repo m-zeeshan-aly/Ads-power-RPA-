@@ -12,7 +12,14 @@
     "likeh": "ts-node like_imran_tweet_human.ts",
     "commenth": "ts-node pti_comment_human.ts",
     "retweeth": "ts-node imran_retweet_human.ts",
-    "posth": "ts-node post_animal_tweet_human.ts"
+    "posth": "ts-node post_animal_tweet_human.ts",
+    "custom-tweet": "ts-node custom_tweet_human.ts",
+    "tweet-cli": "ts-node tweet_cli.ts",
+    "server": "ts-node server/tweet-server.ts",
+    "test-server": "ts-node server/test-server.ts",
+    "example-server": "ts-node server/example-usage.ts",
+    "http-server": "ts-node server/http-tweet-server.ts",
+    "test-http": "ts-node server/test-http-client.ts"
   },
   "keywords": [],
   "author": "",
