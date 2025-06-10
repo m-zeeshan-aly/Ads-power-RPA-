@@ -5,10 +5,9 @@ import * as querystring from 'querystring';
 import * as puppeteer from 'puppeteer-core';
 import { 
   LikeInput, 
-  likeGenericTweetHuman, 
-  connectToBrowser, 
-  getWebSocketUrl 
+  likeGenericTweetHuman 
 } from './generic_like_human';
+import { getBrowserConnection } from '../shared/browser-connection';
 
 // Server configuration
 const PORT = Number(process.env.PORT) || 3002;
@@ -151,26 +150,8 @@ function validateLikeRequest(data: any): LikeInput {
   return likeInput;
 }
 
-// Browser connection management
-let globalBrowser: puppeteer.Browser | null = null;
-
-async function getBrowserConnection(): Promise<puppeteer.Browser> {
-  if (globalBrowser && globalBrowser.isConnected()) {
-    return globalBrowser;
-  }
-
-  logWithTimestamp('Establishing new browser connection...');
-  const wsEndpoint = await getWebSocketUrl();
-  globalBrowser = await connectToBrowser(wsEndpoint);
-  
-  // Handle browser disconnection
-  globalBrowser.on('disconnected', () => {
-    logWithTimestamp('Browser connection lost');
-    globalBrowser = null;
-  });
-
-  return globalBrowser;
-}
+// Browser connection management - using shared connection
+// (removed local browser management in favor of shared connection)
 
 // Handle POST request to like tweets
 async function handleLikeTweets(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -223,11 +204,9 @@ async function handleLikeTweets(req: http.IncomingMessage, res: http.ServerRespo
 
 // Handle GET request for health check
 function handleHealthCheck(req: http.IncomingMessage, res: http.ServerResponse): void {
-  const browserStatus = globalBrowser && globalBrowser.isConnected() ? 'connected' : 'disconnected';
-  
   sendSuccess(res, {
     status: 'healthy',
-    browser: browserStatus,
+    browser: 'managed by shared connection',
     uptime: process.uptime(),
     timestamp: new Date().toISOString()
   });
@@ -372,16 +351,6 @@ function setupGracefulShutdown(server: http.Server): void {
     // Stop accepting new connections
     server.close(async () => {
       logWithTimestamp('HTTP server closed');
-      
-      // Close browser connection
-      if (globalBrowser) {
-        try {
-          await globalBrowser.disconnect();
-          logWithTimestamp('Browser connection closed');
-        } catch (error: any) {
-          logWithTimestamp(`Error closing browser: ${error.message}`);
-        }
-      }
       
       logWithTimestamp('Graceful shutdown completed');
       process.exit(0);

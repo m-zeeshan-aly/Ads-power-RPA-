@@ -5,10 +5,9 @@ import * as querystring from 'querystring';
 import * as puppeteer from 'puppeteer-core';
 import { 
   CommentInput, 
-  commentOnPostsHuman, 
-  connectToBrowser, 
-  getWebSocketUrl 
+  commentOnPostsHuman 
 } from './generic_comment_human';
+import { getBrowserConnection } from '../shared/browser-connection';
 
 // Server configuration
 const PORT = Number(process.env.PORT) || 3003;
@@ -121,43 +120,8 @@ function validateCommentInput(input: any): CommentInput {
   return input as CommentInput;
 }
 
-// Browser connection management
-let browserConnection: puppeteer.Browser | null = null;
-let browserConnectionPromise: Promise<puppeteer.Browser> | null = null;
-
-async function getBrowserConnection(): Promise<puppeteer.Browser> {
-  if (browserConnection && browserConnection.isConnected()) {
-    return browserConnection;
-  }
-
-  if (browserConnectionPromise) {
-    return browserConnectionPromise;
-  }
-
-  browserConnectionPromise = (async () => {
-    try {
-      logWithTimestamp('Establishing new browser connection...');
-      const wsEndpoint = await getWebSocketUrl();
-      browserConnection = await connectToBrowser(wsEndpoint);
-      
-      // Handle disconnection
-      browserConnection.on('disconnected', () => {
-        logWithTimestamp('Browser connection lost');
-        browserConnection = null;
-        browserConnectionPromise = null;
-      });
-
-      logWithTimestamp('Browser connection established successfully');
-      return browserConnection;
-    } catch (error: any) {
-      logWithTimestamp(`Failed to establish browser connection: ${error.message}`);
-      browserConnectionPromise = null;
-      throw error;
-    }
-  })();
-
-  return browserConnectionPromise;
-}
+// Browser connection management - using shared connection
+// (removed local browser management in favor of shared connection)
 
 // Handle comment requests
 async function handleCommentRequest(input: CommentInput): Promise<any> {
@@ -211,7 +175,7 @@ function handleStatus(): any {
     port: PORT,
     host: HOST,
     timestamp: new Date().toISOString(),
-    browserConnected: browserConnection ? browserConnection.isConnected() : false,
+    browser: 'managed by shared connection',
     endpoints: {
       'POST /comment': 'Post comments on tweets based on search criteria',
       'GET /status': 'Get server status',
@@ -367,15 +331,6 @@ process.on('SIGINT', async () => {
   server.close(() => {
     logWithTimestamp('HTTP server closed');
   });
-
-  if (browserConnection) {
-    try {
-      await browserConnection.disconnect();
-      logWithTimestamp('Browser connection closed');
-    } catch (error: any) {
-      logWithTimestamp(`Error closing browser connection: ${error.message}`);
-    }
-  }
 
   logWithTimestamp('Comment Server shutdown complete');
   process.exit(0);

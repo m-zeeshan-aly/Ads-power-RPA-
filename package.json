@@ -21,7 +21,6 @@
     "http-server": "ts-node server/tweet/http-tweet-server.ts",
     "test-http": "ts-node server/like/test-http-client.ts",
     "like-server": "ts-node server/like/like-server.ts",
-    "like-server-old": "ts-node server/like/http-like-server.ts",
     "test-like-server": "ts-node server/like/test-like-server.ts",
     "test-like-client": "ts-node server/like/test-like-client.ts",
     "generic-like": "ts-node server/like/generic_like_human.ts",
@@ -30,7 +29,9 @@
     "generic-comment": "ts-node server/comment/generic_comment_human.ts",
     "retweet-server": "ts-node server/retweet/http-retweet-server.ts",
     "test-retweet-client": "ts-node server/retweet/test-retweet-client.ts",
-    "generic-retweet": "ts-node server/retweet/generic_retweet_human.ts"
+    "generic-retweet": "ts-node server/retweet/generic_retweet_human.ts",
+    "unified-server": "ts-node unified-server.ts",
+    "test-unified": "ts-node test-unified-client.ts"
   },
   "keywords": [],
   "author": "",

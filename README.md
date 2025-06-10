@@ -4,6 +4,32 @@ This project contains multiple Twitter automation scripts using Puppeteer and Ad
 - **Regular version**: Standard automation behavior
 - **Human version**: Includes human-like delays, scrolling, and typing patterns
 
+## 🚀 NEW: Unified Server System
+
+**The project now includes a unified server system that consolidates all social media automation services into one clean, professional API.**
+
+### Quick Start - Unified Server
+```bash
+# Start the unified server (recommended)
+npm run unified-server
+# Server starts at http://localhost:3000
+
+# Test all services
+npm run test-unified
+```
+
+### Unified API Endpoints
+- `POST /api/tweet` - Post tweets with human-like behavior
+- `POST /api/like` - Like tweets based on search criteria  
+- `POST /api/comment` - Comment on tweets
+- `POST /api/retweet` - Retweet posts with behavior patterns
+- `GET /api/status` - Server health check
+- `GET /api/help` - Complete API documentation
+
+**For detailed information, see: [UNIFIED_SERVER_IMPLEMENTATION.md](./UNIFIED_SERVER_IMPLEMENTATION.md)**
+
+---
+
 ## Available Scripts
 
 ### Generic Like System (NEW) 🎯

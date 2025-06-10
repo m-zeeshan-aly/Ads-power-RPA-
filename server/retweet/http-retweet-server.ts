@@ -6,17 +6,16 @@ import * as puppeteer from 'puppeteer-core';
 import { 
   RetweetInput, 
   BehaviorType,
-  retweetGenericTweetHuman, 
-  connectToBrowser, 
-  getWebSocketUrl 
+  retweetGenericTweetHuman
 } from './generic_retweet_human';
+import { getBrowserConnection } from '../shared/browser-connection';
 
 // Server configuration
 const PORT = Number(process.env.PORT) || 3006;
 const HOST = process.env.HOST || 'localhost';
 
-// Global browser instance to reuse connections
-let globalBrowser: puppeteer.Browser | null = null;
+// Browser connection management - using shared connection
+// (removed local browser management in favor of shared connection)
 
 // Logging utility with enhanced formatting
 function logWithTimestamp(message: string, level: 'INFO' | 'ERROR' | 'WARN' = 'INFO'): void {
@@ -146,29 +145,6 @@ function validateRetweetData(data: any): { isValid: boolean; error?: string; ret
   return { isValid: true, retweetInput };
 }
 
-// Initialize browser connection
-async function initBrowser(): Promise<puppeteer.Browser> {
-  if (globalBrowser) {
-    // Test if browser is still connected
-    try {
-      await globalBrowser.pages();
-      return globalBrowser;
-    } catch (error) {
-      logWithTimestamp('Existing browser connection is dead, creating new one', 'WARN');
-      globalBrowser = null;
-    }
-  }
-
-  try {
-    const wsEndpoint = await getWebSocketUrl();
-    globalBrowser = await connectToBrowser(wsEndpoint);
-    return globalBrowser;
-  } catch (error: any) {
-    logWithTimestamp(`Failed to initialize browser: ${error.message}`, 'ERROR');
-    throw error;
-  }
-}
-
 // Handle retweet request
 async function handleRetweetRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
@@ -188,7 +164,7 @@ async function handleRetweetRequest(req: http.IncomingMessage, res: http.ServerR
 
     // Initialize browser
     logWithTimestamp('Initializing browser connection...');
-    const browser = await initBrowser();
+    const browser = await getBrowserConnection();
 
     // Perform retweet operation
     logWithTimestamp('Starting retweet operation...');
@@ -224,27 +200,11 @@ async function handleRetweetRequest(req: http.IncomingMessage, res: http.ServerR
 // Handle status/health check
 async function handleStatusRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
-    let browserStatus = 'disconnected';
-    let browserPages = 0;
-    
-    if (globalBrowser) {
-      try {
-        const pages = await globalBrowser.pages();
-        browserPages = pages.length;
-        browserStatus = 'connected';
-      } catch (error) {
-        browserStatus = 'error';
-      }
-    }
-
     const status = {
       server: 'running',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
-      browser: {
-        status: browserStatus,
-        pages: browserPages
-      },
+      browser: 'managed by shared connection',
       memory: process.memoryUsage(),
       version: process.version,
       behaviorTypes: Object.values(BehaviorType)
@@ -392,15 +352,6 @@ server.listen(PORT, HOST, () => {
 process.on('SIGINT', async () => {
   logWithTimestamp('Received SIGINT, shutting down gracefully...', 'WARN');
   
-  if (globalBrowser) {
-    try {
-      await globalBrowser.disconnect();
-      logWithTimestamp('Browser disconnected successfully');
-    } catch (error) {
-      logWithTimestamp('Error disconnecting browser', 'ERROR');
-    }
-  }
-  
   server.close(() => {
     logWithTimestamp('Server closed successfully');
     process.exit(0);
@@ -409,15 +360,6 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   logWithTimestamp('Received SIGTERM, shutting down gracefully...', 'WARN');
-  
-  if (globalBrowser) {
-    try {
-      await globalBrowser.disconnect();
-      logWithTimestamp('Browser disconnected successfully');
-    } catch (error) {
-      logWithTimestamp('Error disconnecting browser', 'ERROR');
-    }
-  }
   
   server.close(() => {
     logWithTimestamp('Server closed successfully');
