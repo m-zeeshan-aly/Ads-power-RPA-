@@ -21,7 +21,9 @@ import {
   saveScreenshot, 
   randomBetween,
   cleanUsername,
-  formatTwitterProfileUrl
+  formatTwitterProfileUrl,
+  enhancedPostMatch,
+  PostMatchResult
 } from '../shared/utilities';
 import { 
   TWITTER_SELECTORS,
@@ -49,10 +51,69 @@ export interface CommentInput {
   
   // Optional parameters
   commentCount?: number;    // Number of tweets to comment on (default: 1)
-  scrollTime?: number;      // Time to scroll in milliseconds (default: 10000)
+  scrollTime?: number;      // Time to scroll in milliseconds (default: 20000)
   searchInFeed?: boolean;   // Whether to search in home feed first (default: true)
   visitProfile?: boolean;   // Whether to visit profile if feed search fails (default: true)
   behaviorType?: BehaviorType; // Human behavior pattern to use (default: SOCIAL_ENGAGER)
+}
+
+// Function to validate comment input
+function validateCommentInput(input: CommentInput): { isValid: boolean; error?: string } {
+  if (!input.username && !input.searchQuery && !input.tweetContent && !input.profileUrl) {
+    return {
+      isValid: false,
+      error: 'At least one of username, searchQuery, tweetContent, or profileUrl must be provided'
+    };
+  }
+  
+  if (input.commentCount && (input.commentCount < 1 || input.commentCount > 5)) {
+    return {
+      isValid: false,
+      error: 'commentCount must be between 1 and 5'
+    };
+  }
+  
+  return { isValid: true };
+}
+
+// Enhanced function to check if a post matches the criteria with fuzzy matching
+function doesPostMatch(postText: string, input: CommentInput): boolean {
+  const matchResult = enhancedPostMatch(postText, {
+    username: input.username,
+    searchQuery: input.searchQuery,
+    tweetContent: input.tweetContent
+  }, {
+    exactMatchThreshold: 1.0,
+    fuzzyMatchThreshold: 0.75,  // Set to 75% minimum threshold as required
+    enableFuzzyFallback: true
+  });
+  
+  // Only accept high-quality matches - no fuzzy fallbacks unless score is very high
+  if (matchResult.isMatch && !matchResult.fallbackMatch) {
+    // Exact match found - good to proceed
+    logWithTimestamp(
+      `Found exact match (score: ${matchResult.score.toFixed(2)}) - ${matchResult.matchedCriteria.join(', ')}`, 
+      'COMMENT'
+    );
+    logWithTimestamp(`Post preview: "${postText.substring(0, 100)}..."`, 'COMMENT');
+    return true;
+  }
+   if (matchResult.isMatch && matchResult.fallbackMatch && matchResult.score >= 0.75) {
+    // High fuzzy match with 75% threshold - acceptable
+    logWithTimestamp(
+      `Found high-quality fuzzy match (score: ${matchResult.score.toFixed(2)}) - ${matchResult.matchedCriteria.join(', ')}`, 
+      'COMMENT'
+    );
+    logWithTimestamp(`Post preview: "${postText.substring(0, 100)}..."`, 'COMMENT');
+    return true;
+  }
+
+  // Log why post was rejected for debugging
+  if (matchResult.score > 0) {
+    logWithTimestamp(`Post rejected - insufficient match score: ${matchResult.score.toFixed(3)} (required: 0.75)`, 'COMMENT');
+  }
+  
+  return false;
 }
 
 // Function to get WebSocket URL from .env file
@@ -149,7 +210,7 @@ export async function commentOnPostsHuman(browser: puppeteer.Browser, input: Com
   
   // Set defaults and get behavior pattern
   const commentCount = input.commentCount || 1;
-  const scrollTime = input.scrollTime || 10000;
+  const scrollTime = input.scrollTime || 45000; // Increased to 45 seconds for better post discovery
   const searchInFeed = input.searchInFeed !== false;
   const visitProfile = input.visitProfile !== false;
   const behavior = getBehaviorOrDefault(input.behaviorType);
@@ -222,36 +283,20 @@ export async function commentOnPostsHuman(browser: puppeteer.Browser, input: Com
         logWithTimestamp(`Scroll ${scrollCount}: Looking for target posts...`);
         
         try {
-          const matchingPosts = await page.evaluate((criteria) => {
-            const posts = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
-            return posts.filter(post => {
-              if (!post.textContent) return false;
-              const content = post.textContent.toLowerCase();
-              
-              // Check username match
-              if (criteria.username) {
-                const username = criteria.username.toLowerCase().replace('@', '');
-                if (content.includes(username)) return true;
-              }
-              
-              // Check search query match
-              if (criteria.searchQuery) {
-                const searchTerms = criteria.searchQuery.toLowerCase().split(' ');
-                if (searchTerms.some(term => content.includes(term))) return true;
-              }
-              
-              // Check tweet content match
-              if (criteria.tweetContent) {
-                const searchTerms = criteria.tweetContent.toLowerCase().split(' ');
-                if (searchTerms.some(term => content.includes(term))) return true;
-              }
-              
-              return false;
-            }).length;
-          }, input);
+          // Get all posts and their text content
+          const allPosts = await page.$$eval('div[data-testid="cellInnerDiv"]', (posts) => {
+            return posts.map(post => post.textContent || '');
+          });
           
-          if (matchingPosts > 0) {
-            logWithTimestamp(`Found ${matchingPosts} matching posts in the feed!`);
+          let matchingCount = 0;
+          for (const postText of allPosts) {
+            if (doesPostMatch(postText, input)) {
+              matchingCount++;
+            }
+          }
+          
+          if (matchingCount > 0) {
+            logWithTimestamp(`Found ${matchingCount} matching posts in the feed!`);
             foundTargetPost = true;
             break;
           }
@@ -272,36 +317,36 @@ export async function commentOnPostsHuman(browser: puppeteer.Browser, input: Com
       if (foundTargetPost && commentsPosted < commentCount) {
         logWithTimestamp('Found matching posts in feed, attempting to comment...');
         
-        const commentSuccess = await page.evaluate((criteria) => {
-          const posts = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
-          const matchingPosts = posts.filter(post => {
-            if (!post.textContent) return false;
-            const content = post.textContent.toLowerCase();
-            
-            if (criteria.username) {
-              const username = criteria.username.toLowerCase().replace('@', '');
-              if (content.includes(username)) return true;
-            }
-            
-            if (criteria.searchQuery) {
-              const searchTerms = criteria.searchQuery.toLowerCase().split(' ');
-              if (searchTerms.some(term => content.includes(term))) return true;
-            }
-            
-            if (criteria.tweetContent) {
-              const searchTerms = criteria.tweetContent.toLowerCase().split(' ');
-              if (searchTerms.some(term => content.includes(term))) return true;
-            }
-            
-            return false;
-          });
+        // Get all posts and find matching ones using enhanced logic
+        const allPosts = await page.$$eval('div[data-testid="cellInnerDiv"]', (posts) => {
+          return posts.map((post, index) => ({
+            text: post.textContent || '',
+            index: index
+          }));
+        });
+        
+        const matchingPosts = [];
+        for (const post of allPosts) {
+          if (doesPostMatch(post.text, input)) {
+            matchingPosts.push(post);
+          }
+        }
+        
+        if (matchingPosts.length > 0) {
+          const postIndex = matchingPosts.length > 1 
+            ? Math.floor(Math.random() * (matchingPosts.length - 1)) + 1 
+            : 0;
           
-          if (matchingPosts.length > 0) {
-            const postIndex = matchingPosts.length > 1 
-              ? Math.floor(Math.random() * (matchingPosts.length - 1)) + 1 
-              : 0;
+          const selectedPost = matchingPosts[postIndex];
+          logWithTimestamp(`Selected post ${postIndex + 1} of ${matchingPosts.length} matching posts`);
+          
+          // Scroll to and click reply on the selected post
+          const commentSuccess = await page.evaluate((postIdx) => {
+            const posts = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
+            const targetPost = posts[postIdx];
             
-            const targetPost = matchingPosts[postIndex];
+            if (!targetPost) return false;
+            
             targetPost.scrollIntoView({ behavior: 'smooth', block: 'center' });
             
             // Find reply button
@@ -313,9 +358,8 @@ export async function commentOnPostsHuman(browser: puppeteer.Browser, input: Com
               }, 300);
               return true;
             }
-          }
-          return false;
-        }, input);
+            return false;
+          }, selectedPost.index);
         
         if (commentSuccess) {
           await simulateReading();
@@ -350,6 +394,9 @@ export async function commentOnPostsHuman(browser: puppeteer.Browser, input: Com
             logWithTimestamp(`Error while trying to comment: ${error.message}`);
             await saveScreenshot(page, 'comment_error_state.png');
           }
+        }
+        } else {
+          logWithTimestamp('No matching posts found for commenting');
         }
       }
     }

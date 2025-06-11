@@ -26,7 +26,9 @@ import {
   saveScreenshot, 
   randomBetween,
   cleanUsername,
-  formatTwitterProfileUrl
+  formatTwitterProfileUrl,
+  enhancedPostMatch,
+  PostMatchResult
 } from '../shared/utilities';
 import { 
   TWITTER_SELECTORS,
@@ -76,30 +78,46 @@ function validateRetweetInput(input: RetweetInput): { isValid: boolean; error?: 
   return { isValid: true };
 }
 
-// Function to check if a post matches the criteria
+// Enhanced function to check if a post matches the criteria with fuzzy matching
 function doesPostMatch(postText: string, input: RetweetInput): boolean {
-  const lowerText = postText.toLowerCase();
+  const matchResult = enhancedPostMatch(postText, {
+    username: input.username,
+    searchQuery: input.searchQuery,
+    tweetContent: input.tweetContent
+  }, {
+    exactMatchThreshold: 1.0,
+    fuzzyMatchThreshold: 0.75,  // Set to 75% minimum threshold as required
+    enableFuzzyFallback: true
+  });
   
-  // Check username
-  if (input.username) {
-    const username = cleanUsername(input.username);
-    if (lowerText.includes(username)) return true;
+  // Only accept high-quality matches - no fuzzy fallbacks unless score is very high
+  if (matchResult.isMatch && !matchResult.fallbackMatch) {
+    // Exact match found - good to proceed
+    logWithTimestamp(
+      `Found exact match (score: ${matchResult.score.toFixed(2)}) - ${matchResult.matchedCriteria.join(', ')}`, 
+      'RETWEET'
+    );
+    logWithTimestamp(`Post preview: "${postText.substring(0, 100)}..."`, 'RETWEET');
+    return true;
   }
-  
-  // Check search query
-  if (input.searchQuery) {
-    const queryTerms = input.searchQuery.toLowerCase().split(' ');
-    if (queryTerms.some(term => lowerText.includes(term))) return true;
+   if (matchResult.isMatch && matchResult.fallbackMatch && matchResult.score >= 0.75) {
+    // High fuzzy match with 75% threshold - acceptable
+    logWithTimestamp(
+      `Found high-quality fuzzy match (score: ${matchResult.score.toFixed(2)}) - ${matchResult.matchedCriteria.join(', ')}`, 
+      'RETWEET'
+    );
+    logWithTimestamp(`Post preview: "${postText.substring(0, 100)}..."`, 'RETWEET');
+    return true;
   }
-  
-  // Check tweet content
-  if (input.tweetContent) {
-    const contentTerms = input.tweetContent.toLowerCase().split(' ');
-    if (contentTerms.some(term => lowerText.includes(term))) return true;
+
+  // Log why post was rejected for debugging
+  if (matchResult.score > 0) {
+    logWithTimestamp(`Post rejected - insufficient match score: ${matchResult.score.toFixed(3)} (required: 0.75)`, 'RETWEET');
   }
   
   return false;
 }
+  
 
 // Function to perform retweet action with behavior patterns
 async function performRetweet(
@@ -276,7 +294,7 @@ async function searchInHomeFeed(
   
   await saveScreenshot(page, 'twitter_home_retweet.png');
   
-  const scrollTime = input.scrollTime || 10000;
+  const scrollTime = input.scrollTime || 45000; // Increased to 45 seconds for better post discovery
   const retweetCount = input.retweetCount || 1;
   let retweetsCompleted = 0;
   

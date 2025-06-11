@@ -25,7 +25,9 @@ import {
   saveScreenshot, 
   randomBetween,
   cleanUsername,
-  formatTwitterProfileUrl
+  formatTwitterProfileUrl,
+  enhancedPostMatch,
+  PostMatchResult
 } from '../shared/utilities';
 import { 
   TWITTER_SELECTORS,
@@ -50,7 +52,7 @@ export interface LikeInput {
   
   // Optional parameters
   likeCount?: number;       // Number of tweets to like (default: 1)
-  scrollTime?: number;      // Time to scroll in milliseconds (default: 10000)
+  scrollTime?: number;      // Time to scroll in milliseconds (default: 20000)
   searchInFeed?: boolean;   // Whether to search in home feed first (default: true)
   visitProfile?: boolean;   // Whether to visit profile if feed search fails (default: true)
   behaviorType?: BehaviorType; // Human behavior pattern to use
@@ -75,26 +77,41 @@ function validateLikeInput(input: LikeInput): { isValid: boolean; error?: string
   return { isValid: true };
 }
 
-// Function to check if a post matches the criteria
+// Enhanced function to check if a post matches the criteria with fuzzy matching
 function doesPostMatch(postText: string, input: LikeInput): boolean {
-  const lowerText = postText.toLowerCase();
+  const matchResult = enhancedPostMatch(postText, {
+    username: input.username,
+    searchQuery: input.searchQuery,
+    tweetContent: input.tweetContent
+  }, {
+    exactMatchThreshold: 1.0,
+    fuzzyMatchThreshold: 0.75,  // Set to 75% minimum threshold as required
+    enableFuzzyFallback: true
+  });
   
-  // Check username
-  if (input.username) {
-    const username = cleanUsername(input.username);
-    if (lowerText.includes(username)) return true;
+  // Only accept high-quality matches - no fuzzy fallbacks unless score is very high
+  if (matchResult.isMatch && !matchResult.fallbackMatch) {
+    // Exact match found - good to proceed
+    logWithTimestamp(
+      `Found exact match (score: ${matchResult.score.toFixed(2)}) - ${matchResult.matchedCriteria.join(', ')}`, 
+      'LIKE'
+    );
+    logWithTimestamp(`Post preview: "${postText.substring(0, 100)}..."`, 'LIKE');
+    return true;
   }
-  
-  // Check search query
-  if (input.searchQuery) {
-    const queryTerms = input.searchQuery.toLowerCase().split(' ');
-    if (queryTerms.some(term => lowerText.includes(term))) return true;
+   if (matchResult.isMatch && matchResult.fallbackMatch && matchResult.score >= 0.75) {
+    // High fuzzy match with 75% threshold - acceptable
+    logWithTimestamp(
+      `Found high-quality fuzzy match (score: ${matchResult.score.toFixed(2)}) - ${matchResult.matchedCriteria.join(', ')}`, 
+      'LIKE'
+    );
+    logWithTimestamp(`Post preview: "${postText.substring(0, 100)}..."`, 'LIKE');
+    return true;
   }
-  
-  // Check tweet content
-  if (input.tweetContent) {
-    const contentTerms = input.tweetContent.toLowerCase().split(' ');
-    if (contentTerms.some(term => lowerText.includes(term))) return true;
+
+  // Log why post was rejected for debugging
+  if (matchResult.score > 0) {
+    logWithTimestamp(`Post rejected - insufficient match score: ${matchResult.score.toFixed(3)} (required: 0.75)`, 'LIKE');
   }
   
   return false;
@@ -216,7 +233,7 @@ async function searchInHomeFeed(
   
   await saveScreenshot(page, 'twitter_home_page.png');
   
-  const scrollTime = input.scrollTime || 10000;
+  const scrollTime = input.scrollTime || 45000; // Increased to 45 seconds for better post discovery
   const likeCount = input.likeCount || 1;
   let likesCompleted = 0;
   
