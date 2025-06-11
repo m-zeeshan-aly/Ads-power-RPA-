@@ -1,6 +1,7 @@
 // tweet_cli.ts
 import * as readline from 'readline';
-import { TweetInput, postCustomTweetHuman, connectToBrowser, getWebSocketUrl, BehaviorType, HUMAN_BEHAVIORS } from './server/tweet/custom_tweet_human';
+import { TweetInput, postCustomTweetHuman, connectToBrowser, getWebSocketUrl } from './server/tweet/custom_tweet_human';
+import { BehaviorType, HUMAN_BEHAVIORS } from './server/shared/human-behavior';
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -58,8 +59,7 @@ async function main() {
     }
     
     console.log('\nConnecting to browser...');
-    const wsEndpoint = await getWebSocketUrl();
-    const browser = await connectToBrowser(wsEndpoint);
+    const browser = await connectToBrowser();
     
     console.log('Posting tweet with human-like behavior...');
     await postCustomTweetHuman(browser, tweetInput);

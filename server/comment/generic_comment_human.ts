@@ -1,17 +1,39 @@
 // generic_comment_human.ts
 import * as puppeteer from 'puppeteer-core';
 import * as dotenv from 'dotenv';
-import * as fs from 'fs';
-import * as path from 'path';
+
+// Import shared utilities
+import { 
+  BehaviorType, 
+  getBehaviorOrDefault, 
+  HumanBehaviorPattern 
+} from '../shared/human-behavior';
+import { 
+  humanScroll, 
+  humanTypeText, 
+  simulateReading, 
+  humanClick,
+  humanDelay 
+} from '../shared/human-actions';
+import { 
+  logWithTimestamp, 
+  promiseWithTimeout, 
+  saveScreenshot, 
+  randomBetween,
+  cleanUsername,
+  formatTwitterProfileUrl
+} from '../shared/utilities';
+import { 
+  TWITTER_SELECTORS,
+  waitForAnySelector,
+  clickWithSelectors,
+  findTweetsWithText,
+  clickButtonInTweet,
+  ensureOnTwitterHome
+} from '../shared/selectors';
 
 // Load environment variables from .env file
 dotenv.config();
-
-// Create a logs directory if it doesn't exist
-const logsDir = path.join(__dirname, 'debug_logs');
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir);
-}
 
 // Define comment input interface
 export interface CommentInput {
@@ -30,73 +52,42 @@ export interface CommentInput {
   scrollTime?: number;      // Time to scroll in milliseconds (default: 10000)
   searchInFeed?: boolean;   // Whether to search in home feed first (default: true)
   visitProfile?: boolean;   // Whether to visit profile if feed search fails (default: true)
-}
-
-// Helper function to log with timestamps
-function logWithTimestamp(message: string) {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] ${message}`;
-  console.log(logMessage);
-  fs.appendFileSync(path.join(logsDir, 'generic_comment_human.log'), logMessage + '\n');
-}
-
-// Helper function to set a timeout for a promise
-function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
-  let timeoutHandle: NodeJS.Timeout;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutHandle = setTimeout(() => {
-      reject(new Error(errorMessage));
-    }, timeoutMs);
-  });
-
-  return Promise.race([
-    promise,
-    timeoutPromise
-  ]).then((result) => {
-    clearTimeout(timeoutHandle);
-    return result;
-  }).catch((error) => {
-    clearTimeout(timeoutHandle);
-    throw error;
-  });
+  behaviorType?: BehaviorType; // Human behavior pattern to use (default: SOCIAL_ENGAGER)
 }
 
 // Function to get WebSocket URL from .env file
 export async function getWebSocketUrl(): Promise<string> {
   try {
-    logWithTimestamp('Getting WebSocket URL from .env file...');
+    logWithTimestamp('Getting WebSocket URL from .env file...', 'COMMENT');
     
-    // First try reading the .env file manually to ensure we get the latest value
     let wsEndpoint: string;
     try {
-      const envContent = fs.readFileSync(path.join(__dirname, '../../.env'), 'utf8');
+      const envContent = require('fs').readFileSync(require('path').join(__dirname, '../../.env'), 'utf8');
       const wsMatch = envContent.match(/WS_ENDPOINT=(.+)/);
       wsEndpoint = wsMatch ? wsMatch[1].trim() : '';
       
       if (wsEndpoint) {
-        logWithTimestamp(`Found WebSocket endpoint in .env: ${wsEndpoint.substring(0, 30)}...`);
+        logWithTimestamp(`Found WebSocket endpoint in .env: ${wsEndpoint.substring(0, 30)}...`, 'COMMENT');
       }
     } catch (err: any) {
-      logWithTimestamp(`Could not read .env file directly: ${err.message}`);
+      logWithTimestamp(`Could not read .env file directly: ${err.message}`, 'COMMENT');
       wsEndpoint = process.env.WS_ENDPOINT || '';
     }
     
     if (!wsEndpoint || wsEndpoint.trim() === '') {
-      logWithTimestamp('No WebSocket URL found in .env file. Please add WS_ENDPOINT to the .env file.');
-      logWithTimestamp('Check HOW_TO_GET_WEBSOCKET_URL.md for instructions.');
       throw new Error('WS_ENDPOINT not found in environment variables');
     }
     
     return wsEndpoint;
   } catch (error: any) {
-    logWithTimestamp(`Error getting WebSocket URL: ${error.message}`);
+    logWithTimestamp(`Error getting WebSocket URL: ${error.message}`, 'COMMENT');
     throw error;
   }
 }
 
 // Function to connect to browser with Puppeteer
 export async function connectToBrowser(wsEndpoint: string): Promise<puppeteer.Browser> {
-  logWithTimestamp(`Attempting to connect with Puppeteer using WebSocket URL: ${wsEndpoint.substring(0, 30)}...`);
+  logWithTimestamp(`Attempting to connect with Puppeteer using WebSocket URL: ${wsEndpoint.substring(0, 30)}...`, 'COMMENT');
   
   try {
     const browser = await promiseWithTimeout(
@@ -104,31 +95,17 @@ export async function connectToBrowser(wsEndpoint: string): Promise<puppeteer.Br
         browserWSEndpoint: wsEndpoint,
         defaultViewport: null
       }),
-      30000, // 30 second timeout
+      30000,
       'Connection to browser timed out'
     );
     
-    // Test if the connection is actually working
-    logWithTimestamp('Testing browser connection...');
     const version = await browser.version();
-    logWithTimestamp(`Successfully connected to browser. Version: ${version}`);
+    logWithTimestamp(`Successfully connected to browser. Version: ${version}`, 'COMMENT');
     
     return browser;
   } catch (error: any) {
-    logWithTimestamp(`Failed to connect to browser: ${error.message}`);
+    logWithTimestamp(`Failed to connect to browser: ${error.message}`, 'COMMENT');
     throw error;
-  }
-}
-
-// Function to save a screenshot
-async function saveScreenshot(page: puppeteer.Page, filename: string): Promise<void> {
-  try {
-    const filePath = path.join(logsDir, filename);
-    const buffer = await page.screenshot();
-    fs.writeFileSync(filePath, buffer);
-    logWithTimestamp(`Screenshot saved to ${filename}`);
-  } catch (error: any) {
-    logWithTimestamp(`Failed to save screenshot (${filename}): ${error.message}`);
   }
 }
 
@@ -161,101 +138,28 @@ function generateComment(input: CommentInput): string {
   return defaultComments[Math.floor(Math.random() * defaultComments.length)];
 }
 
-// Function to simulate human-like reading pause
-async function simulateReading(): Promise<void> {
-  const readTime = Math.floor(Math.random() * 6000) + 2000;
-  await new Promise(resolve => setTimeout(resolve, readTime));
-}
-
-// Function to simulate human typing with variable speed
-async function humanTypeText(page: puppeteer.Page, selector: string, text: string): Promise<void> {
-  await page.focus(selector);
-  
-  for (let i = 0; i < text.length; i++) {
-    const typingSpeed = Math.floor(Math.random() * 200) + 50;
-    await page.keyboard.type(text[i], { delay: typingSpeed });
-    
-    // Occasionally pause for longer as if thinking
-    if (Math.random() < 0.1) {
-      const thinkingPause = Math.floor(Math.random() * 1000) + 300;
-      await new Promise(resolve => setTimeout(resolve, thinkingPause));
-    }
-  }
-}
-
-// Function to scroll like a human
-async function humanScroll(page: puppeteer.Page, duration: number = 10000): Promise<void> {
-  const startTime = Date.now();
-  let scrollCount = 0;
-  
-  while (Date.now() - startTime < duration) {
-    scrollCount++;
-    
-    const scrollAmount = Math.floor(Math.random() * 400) + 300;
-    
-    await page.evaluate((amount) => {
-      window.scrollBy(0, amount);
-    }, scrollAmount);
-    
-    if (scrollCount % (Math.random() > 0.5 ? 2 : 3) === 0) {
-      await saveScreenshot(page, `human_scroll_${scrollCount}.png`);
-    }
-    
-    const pauseTime = Math.floor(Math.random() * 1000) + 200;
-    await new Promise(resolve => setTimeout(resolve, pauseTime));
-    
-    if (Math.random() < 0.25) {
-      await simulateReading();
-    }
-  }
-}
-
-// Function to check if content matches search criteria
-function contentMatches(content: string, input: CommentInput): boolean {
-  if (!content) return false;
-  
-  const lowerContent = content.toLowerCase();
-  
-  // Check username match
-  if (input.username) {
-    const username = input.username.toLowerCase().replace('@', '');
-    if (lowerContent.includes(username)) return true;
-  }
-  
-  // Check search query match
-  if (input.searchQuery) {
-    const searchTerms = input.searchQuery.toLowerCase().split(' ');
-    if (searchTerms.some(term => lowerContent.includes(term))) return true;
-  }
-  
-  // Check tweet content match
-  if (input.tweetContent) {
-    const searchTerms = input.tweetContent.toLowerCase().split(' ');
-    if (searchTerms.some(term => lowerContent.includes(term))) return true;
-  }
-  
-  return false;
-}
-
 // Main function to comment on posts with human-like behavior
 export async function commentOnPostsHuman(browser: puppeteer.Browser, input: CommentInput): Promise<void> {
-  logWithTimestamp('Starting human-like browsing and comment operation');
+  logWithTimestamp('Starting human-like browsing and comment operation', 'COMMENT');
   
   // Validate input
   if (!input.username && !input.searchQuery && !input.tweetContent && !input.profileUrl) {
     throw new Error('At least one of username, searchQuery, tweetContent, or profileUrl must be provided');
   }
   
-  // Set defaults
+  // Set defaults and get behavior pattern
   const commentCount = input.commentCount || 1;
   const scrollTime = input.scrollTime || 10000;
   const searchInFeed = input.searchInFeed !== false;
   const visitProfile = input.visitProfile !== false;
+  const behavior = getBehaviorOrDefault(input.behaviorType);
+  
+  logWithTimestamp(`Using behavior pattern: ${behavior.name}`, 'COMMENT');
   
   try {
     const pages = await browser.pages();
     if (pages.length === 0) {
-      logWithTimestamp('No browser pages found. Creating a new page...');
+      logWithTimestamp('No browser pages found. Creating a new page...', 'COMMENT');
       await browser.newPage();
       const newPages = await browser.pages();
       if (newPages.length === 0) {
@@ -264,9 +168,9 @@ export async function commentOnPostsHuman(browser: puppeteer.Browser, input: Com
     }
     
     const page = (await browser.pages())[0];
-    logWithTimestamp(`Current page URL: ${await page.url()}`);
+    logWithTimestamp(`Current page URL: ${await page.url()}`, 'COMMENT');
     
-    await saveScreenshot(page, 'comment_initial.png');
+    await saveScreenshot(page, 'comment_initial.png', 'COMMENT');
     
     let commentsPosted = 0;
     let foundTargetPost = false;

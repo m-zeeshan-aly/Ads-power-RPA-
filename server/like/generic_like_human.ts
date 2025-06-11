@@ -1,17 +1,44 @@
-// generic_like_human.ts
+// generic_like_human.ts - Refactored to use shared utilities
 import * as puppeteer from 'puppeteer-core';
 import * as dotenv from 'dotenv';
-import * as fs from 'fs';
-import * as path from 'path';
+
+// Import shared utilities
+import { 
+  BehaviorType, 
+  BehaviorPattern,
+  getRandomBehavior,
+  getBehaviorOrDefault 
+} from '../shared/human-behavior';
+import { 
+  humanScroll, 
+  humanTypeText, 
+  simulateReading, 
+  humanClick,
+  humanDelay,
+  humanHover,
+  humanNavigate,
+  selectHumanLikeIndex
+} from '../shared/human-actions';
+import { 
+  logWithTimestamp, 
+  promiseWithTimeout, 
+  saveScreenshot, 
+  randomBetween,
+  cleanUsername,
+  formatTwitterProfileUrl
+} from '../shared/utilities';
+import { 
+  TWITTER_SELECTORS,
+  waitForAnySelector,
+  clickWithSelectors,
+  findTweetsWithText,
+  clickButtonInTweet,
+  ensureOnTwitterHome
+} from '../shared/selectors';
+import { getBrowserConnection } from '../shared/browser-connection';
 
 // Load environment variables from .env file
 dotenv.config();
-
-// Create a logs directory if it doesn't exist
-const logsDir = path.join(__dirname, 'debug_logs');
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir);
-}
 
 // Define like input interface
 export interface LikeInput {
@@ -26,194 +53,308 @@ export interface LikeInput {
   scrollTime?: number;      // Time to scroll in milliseconds (default: 10000)
   searchInFeed?: boolean;   // Whether to search in home feed first (default: true)
   visitProfile?: boolean;   // Whether to visit profile if feed search fails (default: true)
-}
-
-// Helper function to log with timestamps
-function logWithTimestamp(message: string) {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] ${message}`;
-  console.log(logMessage);
-  fs.appendFileSync(path.join(logsDir, 'generic_like_human.log'), logMessage + '\n');
-}
-
-// Helper function to set a timeout for a promise
-function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
-  let timeoutHandle: NodeJS.Timeout;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutHandle = setTimeout(() => {
-      reject(new Error(errorMessage));
-    }, timeoutMs);
-  });
-
-  return Promise.race([
-    promise,
-    timeoutPromise
-  ]).then((result) => {
-    clearTimeout(timeoutHandle);
-    return result;
-  }).catch((error) => {
-    clearTimeout(timeoutHandle);
-    throw error;
-  });
-}
-
-// Function to save a screenshot
-async function saveScreenshot(page: puppeteer.Page, filename: string): Promise<void> {
-  try {
-    const filePath = path.join(logsDir, filename);
-    const buffer = await page.screenshot();
-    fs.writeFileSync(filePath, buffer);
-    logWithTimestamp(`Screenshot saved to ${filename}`);
-  } catch (error: any) {
-    logWithTimestamp(`Failed to save screenshot (${filename}): ${error.message}`);
-  }
-}
-
-// Function to get WebSocket URL from .env file
-export async function getWebSocketUrl(): Promise<string> {
-  try {
-    logWithTimestamp('Getting WebSocket URL from .env file...');
-    
-    let wsEndpoint: string;
-    try {
-      const envContent = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
-      const wsMatch = envContent.match(/WS_ENDPOINT=(.+)/);
-      wsEndpoint = wsMatch ? wsMatch[1].trim() : '';
-      
-      if (wsEndpoint) {
-        logWithTimestamp(`Found WebSocket endpoint in .env: ${wsEndpoint.substring(0, 30)}...`);
-      }
-    } catch (err: any) {
-      logWithTimestamp(`Could not read .env file directly: ${err.message}`);
-      wsEndpoint = process.env.WS_ENDPOINT || '';
-    }
-    
-    if (!wsEndpoint || wsEndpoint.trim() === '') {
-      logWithTimestamp('No WebSocket URL found in .env file. Please add WS_ENDPOINT to the .env file.');
-      throw new Error('WebSocket endpoint not configured');
-    }
-    
-    return wsEndpoint;
-  } catch (error: any) {
-    logWithTimestamp(`Error getting WebSocket URL: ${error.message}`);
-    throw error;
-  }
-}
-
-// Function to connect to browser with Puppeteer
-export async function connectToBrowser(wsEndpoint: string): Promise<puppeteer.Browser> {
-  logWithTimestamp(`Attempting to connect with Puppeteer using WebSocket URL: ${wsEndpoint.substring(0, 30)}...`);
-  
-  try {
-    const browser = await promiseWithTimeout(
-      puppeteer.connect({
-        browserWSEndpoint: wsEndpoint,
-        defaultViewport: null
-      }),
-      30000, // 30 second timeout
-      'Connection to browser timed out'
-    );
-    
-    // Test if the connection is actually working
-    logWithTimestamp('Testing browser connection...');
-    const version = await browser.version();
-    logWithTimestamp(`Successfully connected to browser. Version: ${version}`);
-    
-    return browser;
-  } catch (error: any) {
-    logWithTimestamp(`Failed to connect to browser: ${error.message}`);
-    throw error;
-  }
-}
-
-// Function to simulate human reading behavior
-async function simulateReading(): Promise<void> {
-  const readingTime = Math.floor(Math.random() * 3000) + 1500; // 1.5-4.5 seconds
-  await new Promise(resolve => setTimeout(resolve, readingTime));
+  behaviorType?: BehaviorType; // Human behavior pattern to use
 }
 
 // Function to validate like input
 function validateLikeInput(input: LikeInput): { isValid: boolean; error?: string } {
-  if (!input) {
-    return { isValid: false, error: 'No input provided' };
-  }
-
-  // At least one search criteria must be provided
   if (!input.username && !input.searchQuery && !input.tweetContent && !input.profileUrl) {
-    return { 
-      isValid: false, 
-      error: 'At least one of username, searchQuery, tweetContent, or profileUrl must be provided' 
+    return {
+      isValid: false,
+      error: 'At least one of username, searchQuery, tweetContent, or profileUrl must be provided'
     };
   }
-
-  // Validate likeCount if provided
-  if (input.likeCount !== undefined && (input.likeCount < 1 || input.likeCount > 10)) {
-    return { 
-      isValid: false, 
-      error: 'likeCount must be between 1 and 10' 
+  
+  if (input.likeCount && (input.likeCount < 1 || input.likeCount > 10)) {
+    return {
+      isValid: false,
+      error: 'likeCount must be between 1 and 10'
     };
   }
-
-  // Validate scrollTime if provided
-  if (input.scrollTime !== undefined && (input.scrollTime < 1000 || input.scrollTime > 60000)) {
-    return { 
-      isValid: false, 
-      error: 'scrollTime must be between 1000 and 60000 milliseconds' 
-    };
-  }
-
+  
   return { isValid: true };
-}
-
-// Function to build search query from input
-function buildSearchQuery(input: LikeInput): string {
-  const parts: string[] = [];
-  
-  if (input.username) {
-    parts.push(input.username);
-  }
-  
-  if (input.searchQuery) {
-    parts.push(input.searchQuery);
-  }
-  
-  return parts.join(' ').trim() || 'latest tweets';
 }
 
 // Function to check if a post matches the criteria
 function doesPostMatch(postText: string, input: LikeInput): boolean {
-  const lowerPostText = postText.toLowerCase();
+  const lowerText = postText.toLowerCase();
   
-  // Check username match
+  // Check username
   if (input.username) {
-    const usernamePattern = input.username.toLowerCase().replace(/^@/, '');
-    if (lowerPostText.includes(usernamePattern)) {
-      return true;
-    }
+    const username = cleanUsername(input.username);
+    if (lowerText.includes(username)) return true;
   }
   
-  // Check search query match
+  // Check search query
   if (input.searchQuery) {
     const queryTerms = input.searchQuery.toLowerCase().split(' ');
-    if (queryTerms.some(term => lowerPostText.includes(term))) {
-      return true;
-    }
+    if (queryTerms.some(term => lowerText.includes(term))) return true;
   }
   
-  // Check tweet content match
+  // Check tweet content
   if (input.tweetContent) {
     const contentTerms = input.tweetContent.toLowerCase().split(' ');
-    if (contentTerms.some(term => lowerPostText.includes(term))) {
-      return true;
-    }
+    if (contentTerms.some(term => lowerText.includes(term))) return true;
   }
   
   return false;
 }
 
+// Function to like posts in the current page
+async function likePostsOnCurrentPage(
+  page: puppeteer.Page, 
+  input: LikeInput, 
+  behavior: BehaviorPattern,
+  targetCount: number
+): Promise<number> {
+  let likesCompleted = 0;
+  
+  try {
+    // Find all tweet containers using shared selectors
+    const tweetContainers = await findTweetsWithText(page, ''); // Get all tweets
+    
+    if (tweetContainers.length === 0) {
+      logWithTimestamp('No tweet containers found on current page', 'LIKE');
+      return 0;
+    }
+    
+    logWithTimestamp(`Found ${tweetContainers.length} tweet containers`, 'LIKE');
+    
+    // Filter tweets that match our criteria
+    const matchingIndices: number[] = [];
+    
+    for (let i = 0; i < tweetContainers.length && likesCompleted < targetCount; i++) {
+      try {
+        const tweetText = await page.evaluate((index) => {
+          const containers = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
+          return containers[index]?.textContent || '';
+        }, i);
+        
+        if (doesPostMatch(tweetText, input)) {
+          matchingIndices.push(i);
+        }
+      } catch (err) {
+        continue;
+      }
+    }
+    
+    if (matchingIndices.length === 0) {
+      logWithTimestamp('No matching posts found on current page', 'LIKE');
+      return 0;
+    }
+    
+    logWithTimestamp(`Found ${matchingIndices.length} matching posts`, 'LIKE');
+    
+    // Like matching posts
+    for (const postIndex of matchingIndices) {
+      if (likesCompleted >= targetCount) break;
+      
+      try {
+        // Scroll to the post using human-like behavior
+        await page.evaluate((index) => {
+          const containers = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
+          if (containers[index]) {
+            containers[index].scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, postIndex);
+        
+        // Human pause after scrolling
+        await simulateReading(behavior);
+        
+        // Get the tweet element for this post
+        const tweetElement = await page.evaluateHandle((index) => {
+          const containers = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
+          return containers[index];
+        }, postIndex);
+        
+        if (!tweetElement) {
+          logWithTimestamp(`Could not find tweet element for post ${postIndex}`, 'LIKE');
+          continue;
+        }
+        
+        // Try to click like button for this specific tweet
+        const likeSuccess = await clickButtonInTweet(tweetElement, TWITTER_SELECTORS.LIKE_BUTTONS);
+        
+        if (likeSuccess) {
+          likesCompleted++;
+          logWithTimestamp(`✅ Successfully liked post ${likesCompleted}/${targetCount}`, 'LIKE');
+          
+          // Human-like delay after liking
+          await humanDelay(behavior);
+          
+          await saveScreenshot(page, `after_like_post_${likesCompleted}.png`);
+          
+          if (likesCompleted < targetCount) {
+            // Pause between likes
+            await humanDelay(behavior, { min: 1000, max: 3000 });
+          }
+        } else {
+          logWithTimestamp(`Could not like post ${postIndex} (may already be liked)`, 'LIKE');
+        }
+      } catch (err: any) {
+        logWithTimestamp(`Error liking post ${postIndex}: ${err.message}`, 'LIKE');
+        continue;
+      }
+    }
+  } catch (error: any) {
+    logWithTimestamp(`Error in likePostsOnCurrentPage: ${error.message}`, 'LIKE');
+  }
+  
+  return likesCompleted;
+}
+
+// Function to search and like in home feed
+async function searchInHomeFeed(
+  page: puppeteer.Page, 
+  input: LikeInput, 
+  behavior: BehaviorPattern
+): Promise<number> {
+  logWithTimestamp('Searching for matching posts in home feed...', 'LIKE');
+  
+  // Ensure we're on Twitter home
+  await ensureOnTwitterHome(page);
+  
+  await saveScreenshot(page, 'twitter_home_page.png');
+  
+  const scrollTime = input.scrollTime || 10000;
+  const likeCount = input.likeCount || 1;
+  let likesCompleted = 0;
+  
+  // Human-like scrolling and searching using shared utilities
+  logWithTimestamp(`Scrolling feed for ${scrollTime}ms looking for matching posts...`, 'LIKE');
+  
+  const scrollStartTime = Date.now();
+  let scrollCount = 0;
+  
+  while (Date.now() - scrollStartTime < scrollTime && likesCompleted < likeCount) {
+    scrollCount++;
+    
+    // Use shared humanScroll with behavior-specific patterns
+    const scrollDistance = randomBetween(
+      behavior.scrollBehavior.scrollDistance.min, 
+      behavior.scrollBehavior.scrollDistance.max
+    );
+    
+    await page.evaluate((distance) => {
+      window.scrollBy(0, distance);
+    }, scrollDistance);
+    
+    // Take occasional screenshots
+    if (scrollCount % 3 === 0) {
+      await saveScreenshot(page, `feed_scroll_${scrollCount}.png`);
+    }
+    
+    // Try to like posts on current view
+    const likesInThisView = await likePostsOnCurrentPage(page, input, behavior, likeCount - likesCompleted);
+    likesCompleted += likesInThisView;
+    
+    if (likesCompleted >= likeCount) {
+      logWithTimestamp(`Completed ${likesCompleted} likes in home feed`, 'LIKE');
+      break;
+    }
+    
+    // Human-like pause between scrolls using shared utilities
+    const pauseTime = randomBetween(behavior.scrollPauseTime.min, behavior.scrollPauseTime.max);
+    await new Promise(resolve => setTimeout(resolve, pauseTime));
+    
+    // Occasional thinking pauses based on behavior
+    if (Math.random() < behavior.thinkingPauseChance) {
+      await simulateReading(behavior);
+    }
+  }
+  
+  return likesCompleted;
+}
+
+// Function to search and like on profile page
+async function searchOnProfile(
+  page: puppeteer.Page, 
+  input: LikeInput, 
+  behavior: BehaviorPattern
+): Promise<number> {
+  logWithTimestamp('Searching for posts on profile page...', 'LIKE');
+  
+  let profileUrl = input.profileUrl;
+  
+  // If no direct profile URL, try to construct one from username
+  if (!profileUrl && input.username) {
+    profileUrl = formatTwitterProfileUrl(input.username);
+    logWithTimestamp(`Constructed profile URL: ${profileUrl}`, 'LIKE');
+  }
+  
+  // If still no profile URL, try to search for the profile
+  if (!profileUrl && (input.username || input.searchQuery)) {
+    const searchTerm = input.username || input.searchQuery;
+    logWithTimestamp(`Searching for profile: ${searchTerm}`, 'LIKE');
+    
+    // Navigate to search and look for profile
+    await humanNavigate(page, `https://twitter.com/search?q=${encodeURIComponent(searchTerm!)}&src=typed_query&f=user`, behavior);
+    
+    await humanDelay(behavior, { min: 2000, max: 4000 });
+    await saveScreenshot(page, 'search_results.png');
+    
+    // Try to find profile link in search results
+    const profileLink = await waitForAnySelector(page, [
+      `a[href="/${cleanUsername(searchTerm!)}"]`,
+      'div[data-testid="UserCell"] a[role="link"]',
+      'div[data-testid="TypeaheadUser"] a'
+    ], 5000).catch(() => null);
+    
+    if (profileLink) {
+      await humanClick(page, profileLink.selector, behavior);
+      await humanDelay(behavior, { min: 2000, max: 4000 });
+    } else {
+      throw new Error(`Could not find profile for: ${searchTerm}`);
+    }
+  } else if (profileUrl) {
+    // Navigate directly to profile
+    await humanNavigate(page, profileUrl, behavior);
+  } else {
+    throw new Error('No way to determine profile to visit');
+  }
+  
+  await saveScreenshot(page, 'profile_page.png');
+  
+  // Wait for tweets to load using shared utilities
+  const tweetsLoaded = await waitForAnySelector(page, [
+    'article[data-testid="tweet"]',
+    'article[role="article"]',
+    'div[data-testid="cellInnerDiv"]',
+    '[data-testid="tweetText"]'
+  ], 10000).catch(() => null);
+  
+  if (!tweetsLoaded) {
+    logWithTimestamp('No tweets found on profile page', 'LIKE');
+    return 0;
+  }
+  
+  logWithTimestamp('Profile tweets loaded successfully', 'LIKE');
+  
+  const likeCount = input.likeCount || 1;
+  let likesCompleted = 0;
+  
+  // Scroll down profile to find tweets to like
+  logWithTimestamp('Scrolling down profile to find tweets to like...', 'LIKE');
+  
+  for (let i = 0; i < 3 && likesCompleted < likeCount; i++) {
+    await page.evaluate(() => {
+      window.scrollBy(0, randomBetween(200, 400));
+    });
+    
+    await humanDelay(behavior, { min: 400, max: 800 });
+  }
+  
+  await saveScreenshot(page, 'profile_after_scroll.png');
+  
+  // Like posts on profile using shared utilities
+  likesCompleted = await likePostsOnCurrentPage(page, input, behavior, likeCount);
+  
+  return likesCompleted;
+}
+
 // Main function to like tweets with human-like behavior
 export async function likeGenericTweetHuman(browser: puppeteer.Browser, input: LikeInput): Promise<void> {
-  logWithTimestamp('Starting generic tweet like operation with human-like behavior');
+  logWithTimestamp('Starting human-like browsing and like operation', 'LIKE');
   
   // Validate input
   const validation = validateLikeInput(input);
@@ -221,446 +362,100 @@ export async function likeGenericTweetHuman(browser: puppeteer.Browser, input: L
     throw new Error(validation.error);
   }
   
+  // Set defaults and get behavior pattern
   const likeCount = input.likeCount || 1;
-  const scrollTime = input.scrollTime || 10000;
-  const searchInFeed = input.searchInFeed !== false; // Default true
-  const visitProfile = input.visitProfile !== false; // Default true
+  const searchInFeed = input.searchInFeed !== false;
+  const visitProfile = input.visitProfile !== false;
+  const behavior = getBehaviorOrDefault(input.behaviorType);
   
-  logWithTimestamp(`Like configuration: likeCount=${likeCount}, scrollTime=${scrollTime}ms, searchInFeed=${searchInFeed}, visitProfile=${visitProfile}`);
+  logWithTimestamp(`Using behavior pattern: ${behavior.name}`, 'LIKE');
+  logWithTimestamp(`Target: ${JSON.stringify({
+    username: input.username,
+    searchQuery: input.searchQuery,
+    likeCount,
+    searchInFeed,
+    visitProfile
+  })}`, 'LIKE');
   
   try {
-    // Get all pages and use the first one
     const pages = await browser.pages();
     if (pages.length === 0) {
-      logWithTimestamp('No browser pages found. Creating a new page...');
+      logWithTimestamp('No browser pages found. Creating a new page...', 'LIKE');
       await browser.newPage();
-      const newPages = await browser.pages();
-      if (newPages.length === 0) {
-        throw new Error('Failed to create a new page');
-      }
     }
     
     const page = (await browser.pages())[0];
-    logWithTimestamp(`Current page URL: ${await page.url()}`);
+    logWithTimestamp(`Current page URL: ${await page.url()}`, 'LIKE');
     
-    // Take a screenshot of initial state
-    await saveScreenshot(page, 'generic_like_initial.png');
+    await saveScreenshot(page, 'like_operation_initial.png');
     
-    let likeSuccess = false;
     let likesCompleted = 0;
     
-    // Step 1: Search in home feed if enabled
-    if (searchInFeed) {
-      logWithTimestamp('Step 1: Searching for matching tweets in home feed...');
-      
-      // Navigate to Twitter home
-      const twitterHomeUrl = 'https://twitter.com/home';
-      logWithTimestamp(`Navigating to Twitter home page: ${twitterHomeUrl}`);
-      
+    // Step 1: Try searching in home feed first (if enabled)
+    if (searchInFeed && likesCompleted < likeCount) {
       try {
-        await promiseWithTimeout(
-          page.goto(twitterHomeUrl, { waitUntil: 'networkidle2' }),
-          60000,
-          'Navigation to Twitter home page timed out'
-        );
-      } catch (navError: any) {
-        logWithTimestamp(`Initial navigation attempt failed: ${navError.message}`);
-        logWithTimestamp('Trying again with different waitUntil strategy...');
+        logWithTimestamp('Attempting to find posts in home feed...', 'LIKE');
+        const feedLikes = await searchInHomeFeed(page, input, behavior);
+        likesCompleted += feedLikes;
         
-        await promiseWithTimeout(
-          page.goto(twitterHomeUrl, { waitUntil: 'load' }),
-          60000,
-          'Second navigation attempt to Twitter home page timed out'
-        );
-      }
-      
-      logWithTimestamp('Successfully navigated to Twitter home page');
-      await saveScreenshot(page, 'twitter_home_page.png');
-      
-      // Human-like scrolling and searching
-      logWithTimestamp(`Scrolling feed for ${scrollTime}ms looking for matching posts...`);
-      
-      const scrollStartTime = Date.now();
-      let foundMatchingPost = false;
-      let scrollCount = 0;
-      
-      while (Date.now() - scrollStartTime < scrollTime && likesCompleted < likeCount) {
-        scrollCount++;
-        
-        // Human-like: Random scroll distance
-        const scrollAmount = Math.floor(Math.random() * 400) + 300; // 300-700px
-        
-        await page.evaluate((scrollDistance) => {
-          window.scrollBy(0, scrollDistance);
-        }, scrollAmount);
-        
-        // Take occasional screenshots
-        if (scrollCount % 3 === 0) {
-          await saveScreenshot(page, `feed_scroll_${scrollCount}.png`);
+        if (likesCompleted >= likeCount) {
+          logWithTimestamp(`✅ Completed all ${likesCompleted} likes in home feed`, 'LIKE');
+          return;
         }
-        
-        // Look for matching posts
-        try {
-          const matchingPosts = await page.evaluate((inputData) => {
-            const posts = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
-            const matching = [];
-            
-            for (let i = 0; i < posts.length; i++) {
-              const post = posts[i];
-              if (post.textContent) {
-                const lowerText = post.textContent.toLowerCase();
-                let matches = false;
-                
-                // Check username
-                if (inputData.username) {
-                  const username = inputData.username.toLowerCase().replace(/^@/, '');
-                  if (lowerText.includes(username)) {
-                    matches = true;
-                  }
-                }
-                
-                // Check search query
-                if (inputData.searchQuery && !matches) {
-                  const queryTerms = inputData.searchQuery.toLowerCase().split(' ');
-                  if (queryTerms.some(term => lowerText.includes(term))) {
-                    matches = true;
-                  }
-                }
-                
-                // Check tweet content
-                if (inputData.tweetContent && !matches) {
-                  const contentTerms = inputData.tweetContent.toLowerCase().split(' ');
-                  if (contentTerms.some(term => lowerText.includes(term))) {
-                    matches = true;
-                  }
-                }
-                
-                if (matches) {
-                  matching.push(i);
-                }
-              }
-            }
-            
-            return matching;
-          }, input);
-          
-          if (matchingPosts.length > 0) {
-            logWithTimestamp(`Found ${matchingPosts.length} matching posts in the feed!`);
-            foundMatchingPost = true;
-            
-            // Try to like matching posts
-            for (const postIndex of matchingPosts) {
-              if (likesCompleted >= likeCount) break;
-              
-              // Human-like: Scroll to the post
-              const scrollToPostSuccess = await page.evaluate((idx) => {
-                const posts = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
-                if (idx < posts.length) {
-                  posts[idx].scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  return true;
-                }
-                return false;
-              }, postIndex);
-              
-              if (scrollToPostSuccess) {
-                // Human pause after scrolling to the post
-                await simulateReading();
-                
-                // Take screenshot before liking
-                await saveScreenshot(page, `before_like_post_${likesCompleted + 1}.png`);
-                
-                // Check if already liked and attempt to like
-                const likeResult = await page.evaluate((idx) => {
-                  const posts = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
-                  if (idx >= posts.length) return { success: false, reason: 'Post not found' };
-                  
-                  const targetPost = posts[idx];
-                  const likeButton = targetPost.querySelector('[data-testid="like"]') as HTMLElement;
-                  
-                  if (!likeButton) {
-                    return { success: false, reason: 'Like button not found' };
-                  }
-                  
-                  // Check if already liked
-                  const isAlreadyLiked = likeButton.getAttribute('aria-pressed') === 'true';
-                  if (isAlreadyLiked) {
-                    return { success: false, reason: 'Already liked' };
-                  }
-                  
-                  // Hover and click
-                  likeButton.dispatchEvent(new MouseEvent('mouseover'));
-                  setTimeout(() => {
-                    likeButton.click();
-                  }, 300);
-                  
-                  return { success: true, reason: 'Liked successfully' };
-                }, postIndex);
-                
-                if (likeResult.success) {
-                  likesCompleted++;
-                  logWithTimestamp(`✅ Successfully liked post ${likesCompleted}/${likeCount} in feed`);
-                  
-                  // Human-like: Wait after liking
-                  await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 2000) + 1000));
-                  
-                  await saveScreenshot(page, `after_like_post_${likesCompleted}.png`);
-                } else {
-                  logWithTimestamp(`⚠️ Could not like post: ${likeResult.reason}`);
-                }
-              }
-            }
-            
-            if (likesCompleted >= likeCount) {
-              likeSuccess = true;
-              break;
-            }
-          }
-        } catch (err: any) {
-          logWithTimestamp(`Error checking for posts: ${err.message}`);
-        }
-        
-        // Human-like: Random pause between scrolls
-        const pauseTime = Math.floor(Math.random() * 800) + 200;
-        await new Promise(resolve => setTimeout(resolve, pauseTime));
+      } catch (feedError: any) {
+        logWithTimestamp(`Home feed search failed: ${feedError.message}`, 'LIKE');
       }
-      
-      logWithTimestamp(`Feed search completed. Found matching posts: ${foundMatchingPost}, Likes completed: ${likesCompleted}/${likeCount}`);
     }
     
-    // Step 2: Visit profile if needed and enabled
+    // Step 2: Try profile page if we still need more likes (if enabled)
     if (visitProfile && likesCompleted < likeCount) {
-      logWithTimestamp('Step 2: Searching profile for tweets to like...');
-      
-      let profileUrl = input.profileUrl;
-      
-      // If no direct profile URL, try to construct one or search for the user
-      if (!profileUrl && input.username) {
-        const cleanUsername = input.username.replace(/^@/, '');
-        profileUrl = `https://twitter.com/${cleanUsername}`;
-        logWithTimestamp(`Constructed profile URL: ${profileUrl}`);
-      }
-      
-      // If still no profile URL, try searching for the user
-      if (!profileUrl && (input.searchQuery || input.username)) {
-        logWithTimestamp('No profile URL available, attempting to search for user...');
+      try {
+        logWithTimestamp(`Need ${likeCount - likesCompleted} more likes, trying profile page...`, 'LIKE');
+        const profileLikes = await searchOnProfile(page, input, behavior);
+        likesCompleted += profileLikes;
         
-        // Try to find search box and search for the user
-        const searchBoxSelectors = [
-          'input[aria-label="Search query"]',
-          'input[data-testid="SearchBox_Search_Input"]',
-          'input[placeholder="Search Twitter"]',
-          'input[placeholder="Search"]'
-        ];
-        
-        let searchBoxFound = false;
-        for (const selector of searchBoxSelectors) {
-          try {
-            const searchBox = await page.$(selector);
-            if (searchBox) {
-              logWithTimestamp(`Found search box with selector: ${selector}`);
-              
-              // Human-like: Click with pause
-              await new Promise(resolve => setTimeout(resolve, 500));
-              await page.click(selector);
-              
-              // Type search query
-              const searchQuery = buildSearchQuery(input);
-              logWithTimestamp(`Typing search query: "${searchQuery}"`);
-              
-              for (let i = 0; i < searchQuery.length; i++) {
-                await page.keyboard.type(searchQuery[i], { 
-                  delay: Math.floor(Math.random() * 150) + 50 
-                });
-              }
-              
-              await new Promise(resolve => setTimeout(resolve, 800));
-              await page.keyboard.press('Enter');
-              
-              // Wait for search results
-              await new Promise(resolve => setTimeout(resolve, 2500));
-              await saveScreenshot(page, 'search_results.png');
-              
-              // Try to find profile link in search results
-              const profileSelectors = [
-                'a[data-testid="UserCell"]',
-                'div[data-testid="UserCell"] a[role="link"]',
-                'div[data-testid="TypeaheadUser"] a'
-              ];
-              
-              for (const pSelector of profileSelectors) {
-                try {
-                  const profileLink = await page.$(pSelector);
-                  if (profileLink) {
-                    logWithTimestamp(`Found profile link with selector: ${pSelector}`);
-                    
-                    await profileLink.hover();
-                    await new Promise(resolve => setTimeout(resolve, 700));
-                    await profileLink.click();
-                    
-                    // Wait for profile to load
-                    await new Promise(resolve => setTimeout(resolve, 3000));
-                    profileUrl = await page.url();
-                    logWithTimestamp(`Successfully navigated to profile: ${profileUrl}`);
-                    break;
-                  }
-                } catch (err) {
-                  continue;
-                }
-              }
-              
-              searchBoxFound = true;
-              break;
-            }
-          } catch (err) {
-            continue;
-          }
+        if (likesCompleted >= likeCount) {
+          logWithTimestamp(`✅ Completed all ${likesCompleted} likes including profile page`, 'LIKE');
         }
-        
-        if (!searchBoxFound) {
-          logWithTimestamp('Could not find search box to search for user');
-        }
-      }
-      
-      // If we have a profile URL, navigate to it
-      if (profileUrl && !profileUrl.includes('/search')) {
-        try {
-          if (profileUrl !== await page.url()) {
-            logWithTimestamp(`Navigating to profile: ${profileUrl}`);
-            await promiseWithTimeout(
-              page.goto(profileUrl, { waitUntil: 'networkidle2' }),
-              60000,
-              'Navigation to profile timed out'
-            );
-          }
-          
-          await saveScreenshot(page, 'profile_page.png');
-          
-          // Wait for tweets to load
-          logWithTimestamp('Waiting for profile tweets to load...');
-          
-          const tweetSelectors = [
-            'article[data-testid="tweet"]',
-            'article[role="article"]',
-            'div[data-testid="cellInnerDiv"]',
-            '[data-testid="tweetText"]'
-          ];
-          
-          let tweetsLoaded = false;
-          for (const selector of tweetSelectors) {
-            try {
-              await promiseWithTimeout(
-                page.waitForSelector(selector, { timeout: 10000 }),
-                10000,
-                `Waiting for tweets with selector ${selector} timed out`
-              );
-              logWithTimestamp(`Found tweets with selector: ${selector}`);
-              tweetsLoaded = true;
-              break;
-            } catch (err) {
-              continue;
-            }
-          }
-          
-          if (tweetsLoaded) {
-            // Human-like: Scroll down a bit to see more tweets
-            logWithTimestamp('Scrolling down profile to find tweets to like...');
-            
-            for (let i = 0; i < 3 && likesCompleted < likeCount; i++) {
-              await page.evaluate(() => {
-                window.scrollBy(0, Math.floor(Math.random() * 300) + 200);
-              });
-              
-              await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 800) + 400));
-            }
-            
-            await saveScreenshot(page, 'profile_after_scroll.png');
-            
-            // Find and like tweets on profile
-            const likeButtons = await page.$$('[data-testid="like"]');
-            
-            if (likeButtons.length > 0) {
-              logWithTimestamp(`Found ${likeButtons.length} like buttons on profile`);
-              
-              // Human-like: Don't always pick the first tweet
-              for (let attempt = 0; attempt < Math.min(likeButtons.length, likeCount - likesCompleted + 2); attempt++) {
-                const buttonIndex = Math.min(attempt, likeButtons.length - 1);
-                
-                // Check if already liked
-                const isAlreadyLiked = await page.evaluate((idx) => {
-                  const buttons = Array.from(document.querySelectorAll('[data-testid="like"]'));
-                  if (idx >= buttons.length) return true;
-                  return buttons[idx].getAttribute('aria-pressed') === 'true';
-                }, buttonIndex);
-                
-                if (!isAlreadyLiked) {
-                  // Human-like: Hover, pause, then click
-                  await likeButtons[buttonIndex].hover();
-                  await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 700) + 300));
-                  await likeButtons[buttonIndex].click();
-                  
-                  likesCompleted++;
-                  logWithTimestamp(`✅ Successfully liked tweet ${likesCompleted}/${likeCount} on profile`);
-                  
-                  // Wait for like action to register
-                  await new Promise(resolve => setTimeout(resolve, 2000));
-                  await saveScreenshot(page, `after_profile_like_${likesCompleted}.png`);
-                  
-                  if (likesCompleted >= likeCount) {
-                    likeSuccess = true;
-                    break;
-                  }
-                  
-                  // Human-like pause between likes
-                  await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 3000) + 2000));
-                } else {
-                  logWithTimestamp(`Tweet ${buttonIndex + 1} is already liked, trying next one`);
-                }
-              }
-            } else {
-              logWithTimestamp('No like buttons found on profile');
-            }
-          } else {
-            logWithTimestamp('Could not load tweets on profile');
-          }
-        } catch (error: any) {
-          logWithTimestamp(`Error navigating to or processing profile: ${error.message}`);
-        }
+      } catch (profileError: any) {
+        logWithTimestamp(`Profile search failed: ${profileError.message}`, 'LIKE');
       }
     }
     
-    // Final result
-    if (likesCompleted > 0) {
-      likeSuccess = true;
-      logWithTimestamp(`✅ Successfully completed ${likesCompleted}/${likeCount} likes`);
-      
-      // Human-like: Return to home page
-      logWithTimestamp('Returning to home page...');
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      try {
-        await page.goto('https://twitter.com/home', { waitUntil: 'load' });
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        await saveScreenshot(page, 'back_to_home.png');
-        logWithTimestamp('Successfully returned to home page');
-      } catch (err) {
-        logWithTimestamp('Could not return to home page');
-      }
+    // Final results
+    if (likesCompleted === 0) {
+      throw new Error('Could not like any tweets. No matching posts found.');
+    } else if (likesCompleted < likeCount) {
+      logWithTimestamp(`⚠️ Partially completed: ${likesCompleted}/${likeCount} likes`, 'LIKE');
     } else {
-      logWithTimestamp('❌ Failed to like any tweets matching the criteria');
-      throw new Error('Could not like any tweets matching the specified criteria');
+      logWithTimestamp(`✅ Successfully completed all ${likesCompleted} likes`, 'LIKE');
     }
+    
+    // Final screenshot
+    await saveScreenshot(page, 'like_operation_complete.png');
     
   } catch (error: any) {
-    logWithTimestamp(`Error during generic like operation: ${error.message}`);
+    logWithTimestamp(`Error during like operation: ${error.message}`, 'LIKE');
     
-    // Take a screenshot of the error state
     try {
       const page = (await browser.pages())[0];
-      await saveScreenshot(page, 'generic_like_error.png');
+      await saveScreenshot(page, 'like_operation_error.png');
     } catch (err) {
-      logWithTimestamp('Could not take error screenshot');
+      logWithTimestamp('Could not take error screenshot', 'LIKE');
     }
     
     throw error;
   }
 }
+
+// Export everything needed by other modules
+export {
+  connectToBrowser,
+  getWebSocketUrl
+} from '../shared/browser-connection';
+
+// Export utilities that other modules might need
+export {
+  logWithTimestamp,
+  saveScreenshot
+} from '../shared/utilities';

@@ -189,8 +189,7 @@ async function initializeBrowser(): Promise<puppeteer.Browser> {
   }
 
   try {
-    const wsEndpoint = await getWebSocketUrl();
-    globalBrowser = await connectToBrowser(wsEndpoint);
+    globalBrowser = await connectToBrowser();
     logWithTimestamp('Browser connected successfully');
     return globalBrowser;
   } catch (error: any) {

@@ -8,7 +8,7 @@ import {
   postCustomTweetHuman, 
   connectToBrowser, 
   getWebSocketUrl 
-} from '../custom_tweet_human';
+} from './custom_tweet_human';
 
 // Server configuration
 const PORT = Number(process.env.PORT) || 3001;
@@ -184,8 +184,7 @@ async function initializeBrowser(): Promise<puppeteer.Browser> {
   }
 
   try {
-    const wsEndpoint = await getWebSocketUrl();
-    globalBrowser = await connectToBrowser(wsEndpoint);
+    globalBrowser = await connectToBrowser();
     logWithTimestamp('Browser connected successfully');
     return globalBrowser;
   } catch (error: any) {

@@ -1,17 +1,45 @@
-// generic_retweet_human.ts
+// generic_retweet_human.ts - Refactored to use shared utilities
 import * as puppeteer from 'puppeteer-core';
 import * as dotenv from 'dotenv';
-import * as fs from 'fs';
-import * as path from 'path';
+
+// Import shared utilities
+import { 
+  BehaviorType, 
+  BehaviorPattern,
+  getRandomBehavior,
+  getBehaviorOrDefault 
+} from '../shared/human-behavior';
+import { 
+  humanScroll, 
+  humanTypeText, 
+  simulateReading, 
+  humanClick,
+  humanDelay,
+  humanHover,
+  humanNavigate,
+  selectHumanLikeIndex,
+  simulateThinking
+} from '../shared/human-actions';
+import { 
+  logWithTimestamp, 
+  promiseWithTimeout, 
+  saveScreenshot, 
+  randomBetween,
+  cleanUsername,
+  formatTwitterProfileUrl
+} from '../shared/utilities';
+import { 
+  TWITTER_SELECTORS,
+  waitForAnySelector,
+  clickWithSelectors,
+  findTweetsWithText,
+  clickButtonInTweet,
+  ensureOnTwitterHome
+} from '../shared/selectors';
+import { getBrowserConnection } from '../shared/browser-connection';
 
 // Load environment variables from .env file
 dotenv.config();
-
-// Create a logs directory if it doesn't exist
-const logsDir = path.join(__dirname, 'debug_logs');
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir);
-}
 
 // Define retweet input interface
 export interface RetweetInput {
@@ -29,218 +57,244 @@ export interface RetweetInput {
   behaviorType?: BehaviorType; // Human behavior pattern to use (default: SOCIAL_ENGAGER)
 }
 
-// Define human behavior types
-export enum BehaviorType {
-  CASUAL_BROWSER = 'casual_browser',
-  FOCUSED_POSTER = 'focused_poster',
-  SOCIAL_ENGAGER = 'social_engager',
-  QUICK_POSTER = 'quick_poster',
-  THOUGHTFUL_WRITER = 'thoughtful_writer'
-}
-
-// Define behavior patterns
-interface BehaviorPattern {
-  name: string;
-  description: string;
-  preScrollTime: { min: number; max: number };
-  scrollPauseTime: { min: number; max: number };
-  hoverTime: { min: number; max: number };
-  readingTime: { min: number; max: number };
-  actionDelays: { min: number; max: number };
-  thinkingPauseChance: number;
-  thinkingPauseDuration: { min: number; max: number };
-  scrollBehavior: { scrollsPerAction: { min: number; max: number }; scrollDistance: { min: number; max: number } };
-}
-
-// Human behavior configurations
-const HUMAN_BEHAVIORS: Record<BehaviorType, BehaviorPattern> = {
-  [BehaviorType.CASUAL_BROWSER]: {
-    name: 'Casual Browser',
-    description: 'Scrolls extensively, takes time to read, natural pauses',
-    preScrollTime: { min: 8000, max: 15000 },
-    scrollPauseTime: { min: 800, max: 1500 },
-    hoverTime: { min: 400, max: 800 },
-    readingTime: { min: 2000, max: 4000 },
-    actionDelays: { min: 1000, max: 2500 },
-    thinkingPauseChance: 0.15,
-    thinkingPauseDuration: { min: 1000, max: 2500 },
-    scrollBehavior: { scrollsPerAction: { min: 3, max: 6 }, scrollDistance: { min: 250, max: 450 } }
-  },
-  
-  [BehaviorType.FOCUSED_POSTER]: {
-    name: 'Focused Poster',
-    description: 'Minimal scrolling, direct approach, quick decisions',
-    preScrollTime: { min: 2000, max: 5000 },
-    scrollPauseTime: { min: 300, max: 600 },
-    hoverTime: { min: 200, max: 400 },
-    readingTime: { min: 800, max: 1500 },
-    actionDelays: { min: 500, max: 1200 },
-    thinkingPauseChance: 0.08,
-    thinkingPauseDuration: { min: 300, max: 800 },
-    scrollBehavior: { scrollsPerAction: { min: 1, max: 3 }, scrollDistance: { min: 200, max: 350 } }
-  },
-  
-  [BehaviorType.SOCIAL_ENGAGER]: {
-    name: 'Social Engager',
-    description: 'Moderate scrolling, careful selection, thoughtful interaction',
-    preScrollTime: { min: 6000, max: 12000 },
-    scrollPauseTime: { min: 500, max: 1000 },
-    hoverTime: { min: 300, max: 600 },
-    readingTime: { min: 1500, max: 3000 },
-    actionDelays: { min: 800, max: 1800 },
-    thinkingPauseChance: 0.12,
-    thinkingPauseDuration: { min: 500, max: 1500 },
-    scrollBehavior: { scrollsPerAction: { min: 2, max: 4 }, scrollDistance: { min: 200, max: 400 } }
-  },
-  
-  [BehaviorType.QUICK_POSTER]: {
-    name: 'Quick Poster',
-    description: 'Fast scrolling, minimal delays, efficient retweeting',
-    preScrollTime: { min: 1000, max: 3000 },
-    scrollPauseTime: { min: 200, max: 400 },
-    hoverTime: { min: 150, max: 300 },
-    readingTime: { min: 500, max: 1000 },
-    actionDelays: { min: 300, max: 800 },
-    thinkingPauseChance: 0.05,
-    thinkingPauseDuration: { min: 200, max: 500 },
-    scrollBehavior: { scrollsPerAction: { min: 1, max: 2 }, scrollDistance: { min: 300, max: 500 } }
-  },
-  
-  [BehaviorType.THOUGHTFUL_WRITER]: {
-    name: 'Thoughtful Writer',
-    description: 'Extensive reading, long pauses, careful consideration',
-    preScrollTime: { min: 10000, max: 20000 },
-    scrollPauseTime: { min: 1000, max: 2000 },
-    hoverTime: { min: 500, max: 1000 },
-    readingTime: { min: 3000, max: 6000 },
-    actionDelays: { min: 1500, max: 3000 },
-    thinkingPauseChance: 0.20,
-    thinkingPauseDuration: { min: 1000, max: 3000 },
-    scrollBehavior: { scrollsPerAction: { min: 4, max: 8 }, scrollDistance: { min: 150, max: 300 } }
+// Function to validate retweet input
+function validateRetweetInput(input: RetweetInput): { isValid: boolean; error?: string } {
+  if (!input.username && !input.searchQuery && !input.tweetContent && !input.profileUrl) {
+    return {
+      isValid: false,
+      error: 'At least one of username, searchQuery, tweetContent, or profileUrl must be provided'
+    };
   }
-};
-
-// Helper function to log with timestamps
-function logWithTimestamp(message: string) {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] ${message}`;
-  console.log(logMessage);
-  fs.appendFileSync(path.join(logsDir, 'generic_retweet_human.log'), logMessage + '\n');
-}
-
-// Helper function to set a timeout for a promise
-function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
-  let timeoutHandle: NodeJS.Timeout;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutHandle = setTimeout(() => {
-      reject(new Error(errorMessage));
-    }, timeoutMs);
-  });
-
-  return Promise.race([
-    promise,
-    timeoutPromise
-  ]).then((result) => {
-    clearTimeout(timeoutHandle);
-    return result;
-  }).catch((error) => {
-    clearTimeout(timeoutHandle);
-    throw error;
-  });
-}
-
-// Function to save a screenshot
-async function saveScreenshot(page: puppeteer.Page, filename: string): Promise<void> {
-  try {
-    const filePath = path.join(logsDir, filename);
-    const buffer = await page.screenshot();
-    fs.writeFileSync(filePath, buffer);
-    logWithTimestamp(`Screenshot saved to ${filename}`);
-  } catch (error: any) {
-    logWithTimestamp(`Failed to save screenshot (${filename}): ${error.message}`);
+  
+  if (input.retweetCount && (input.retweetCount < 1 || input.retweetCount > 10)) {
+    return {
+      isValid: false,
+      error: 'retweetCount must be between 1 and 10'
+    };
   }
+  
+  return { isValid: true };
 }
 
-// Function to get WebSocket URL from .env file
-export async function getWebSocketUrl(): Promise<string> {
+// Function to check if a post matches the criteria
+function doesPostMatch(postText: string, input: RetweetInput): boolean {
+  const lowerText = postText.toLowerCase();
+  
+  // Check username
+  if (input.username) {
+    const username = cleanUsername(input.username);
+    if (lowerText.includes(username)) return true;
+  }
+  
+  // Check search query
+  if (input.searchQuery) {
+    const queryTerms = input.searchQuery.toLowerCase().split(' ');
+    if (queryTerms.some(term => lowerText.includes(term))) return true;
+  }
+  
+  // Check tweet content
+  if (input.tweetContent) {
+    const contentTerms = input.tweetContent.toLowerCase().split(' ');
+    if (contentTerms.some(term => lowerText.includes(term))) return true;
+  }
+  
+  return false;
+}
+
+// Function to perform retweet action with behavior patterns
+async function performRetweet(
+  page: puppeteer.Page, 
+  behavior: BehaviorPattern, 
+  postIndex: number
+): Promise<boolean> {
   try {
-    logWithTimestamp('Getting WebSocket URL from .env file...');
-    
-    let wsEndpoint: string;
-    try {
-      const envContent = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
-      const wsMatch = envContent.match(/WS_ENDPOINT=(.+)/);
-      wsEndpoint = wsMatch ? wsMatch[1].trim() : '';
-      
-      if (wsEndpoint) {
-        logWithTimestamp(`Found WebSocket endpoint in .env: ${wsEndpoint.substring(0, 30)}...`);
+    // Scroll to the post using human-like behavior
+    await page.evaluate((index) => {
+      const containers = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
+      if (containers[index]) {
+        containers[index].scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
-    } catch (err: any) {
-      logWithTimestamp(`Could not read .env file directly: ${err.message}`);
-      wsEndpoint = process.env.WS_ENDPOINT || '';
+    }, postIndex);
+    
+    // Human pause after scrolling to read the post
+    await simulateReading(behavior);
+    
+    // Take screenshot before retweeting
+    await saveScreenshot(page, `before_retweet_post_${postIndex}.png`);
+    
+    // Get the tweet element for this post
+    const tweetElement = await page.evaluateHandle((index) => {
+      const containers = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
+      return containers[index];
+    }, postIndex);
+    
+    if (!tweetElement) {
+      logWithTimestamp(`Could not find tweet element for post ${postIndex}`, 'RETWEET');
+      return false;
     }
     
-    if (!wsEndpoint || wsEndpoint.trim() === '') {
-      logWithTimestamp('No WebSocket URL found in .env file. Please add WS_ENDPOINT to the .env file.');
-      throw new Error('WebSocket endpoint not configured');
+    // Try to click retweet button for this specific tweet
+    const retweetClicked = await clickButtonInTweet(tweetElement, TWITTER_SELECTORS.RETWEET_BUTTONS);
+    
+    if (!retweetClicked) {
+      logWithTimestamp(`Could not click retweet button for post ${postIndex}`, 'RETWEET');
+      return false;
     }
     
-    return wsEndpoint;
+    // Wait for retweet menu to appear with human-like delay
+    await humanDelay(behavior, { min: 500, max: 1500 });
+    await saveScreenshot(page, `retweet_menu_${postIndex}.png`);
+    
+    // Find and click the "Retweet" confirmation button
+    const confirmButton = await waitForAnySelector(page, [
+      '[data-testid="retweetConfirm"]',
+      'div[data-testid="retweetConfirm"]',
+      '[role="menuitem"]:has-text("Retweet")',
+      '[role="menuitem"] span:has-text("Retweet")'
+    ], 5000).catch(() => null);
+    
+    if (confirmButton) {
+      // Use shared humanHover and humanClick for consistent behavior
+      await humanHover(page, confirmButton.selector, behavior);
+      await humanClick(page, confirmButton.selector, behavior);
+      
+      // Wait for retweet to complete
+      await humanDelay(behavior, { min: 1000, max: 2000 });
+      await saveScreenshot(page, `after_retweet_${postIndex}.png`);
+      
+      logWithTimestamp(`Successfully retweeted post ${postIndex}`, 'RETWEET');
+      return true;
+    } else {
+      logWithTimestamp(`Could not find retweet confirmation button for post ${postIndex}`, 'RETWEET');
+      return false;
+    }
+    
   } catch (error: any) {
-    logWithTimestamp(`Error getting WebSocket URL: ${error.message}`);
-    throw error;
+    logWithTimestamp(`Error retweeting post ${postIndex}: ${error.message}`, 'RETWEET');
+    return false;
   }
 }
 
-// Function to connect to browser
-export async function connectToBrowser(wsEndpoint: string): Promise<puppeteer.Browser> {
+// Function to retweet posts in the current page
+async function retweetPostsOnCurrentPage(
+  page: puppeteer.Page, 
+  input: RetweetInput, 
+  behavior: BehaviorPattern,
+  targetCount: number
+): Promise<number> {
+  let retweetsCompleted = 0;
+  
   try {
-    logWithTimestamp('Connecting to browser...');
-    const browser = await puppeteer.connect({ 
-      browserWSEndpoint: wsEndpoint,
-      defaultViewport: null
-    });
+    // Find all tweet containers using shared selectors
+    const tweetContainers = await findTweetsWithText(page, ''); // Get all tweets
     
-    logWithTimestamp('Successfully connected to browser');
-    return browser;
+    if (tweetContainers.length === 0) {
+      logWithTimestamp('No tweet containers found on current page', 'RETWEET');
+      return 0;
+    }
+    
+    logWithTimestamp(`Found ${tweetContainers.length} tweet containers`, 'RETWEET');
+    
+    // Filter tweets that match our criteria
+    const matchingIndices: number[] = [];
+    
+    for (let i = 0; i < tweetContainers.length && retweetsCompleted < targetCount; i++) {
+      try {
+        const tweetText = await page.evaluate((index) => {
+          const containers = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
+          return containers[index]?.textContent || '';
+        }, i);
+        
+        if (doesPostMatch(tweetText, input)) {
+          matchingIndices.push(i);
+        }
+      } catch (err) {
+        continue;
+      }
+    }
+    
+    if (matchingIndices.length === 0) {
+      logWithTimestamp('No matching posts found on current page', 'RETWEET');
+      return 0;
+    }
+    
+    logWithTimestamp(`Found ${matchingIndices.length} matching posts`, 'RETWEET');
+    
+    // Retweet matching posts
+    for (const postIndex of matchingIndices) {
+      if (retweetsCompleted >= targetCount) break;
+      
+      // Check if already retweeted
+      const alreadyRetweeted = await page.evaluate((index) => {
+        const containers = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
+        if (containers[index]) {
+          const retweetButton = containers[index].querySelector('[data-testid="retweet"]');
+          return retweetButton?.getAttribute('aria-pressed') === 'true';
+        }
+        return false;
+      }, postIndex);
+      
+      if (alreadyRetweeted) {
+        logWithTimestamp(`Post ${postIndex} already retweeted, skipping`, 'RETWEET');
+        continue;
+      }
+      
+      const success = await performRetweet(page, behavior, postIndex);
+      if (success) {
+        retweetsCompleted++;
+        logWithTimestamp(`✅ Successfully retweeted post ${retweetsCompleted}/${targetCount}`, 'RETWEET');
+        
+        if (retweetsCompleted < targetCount) {
+          // Pause between retweets using behavior-specific timing
+          await humanDelay(behavior, { 
+            min: behavior.actionDelays.min * 2, 
+            max: behavior.actionDelays.max * 2 
+          });
+          
+          // Small scroll to potentially find more content
+          await humanScroll(page, 2000, behavior);
+        }
+      }
+    }
   } catch (error: any) {
-    logWithTimestamp(`Failed to connect to browser: ${error.message}`);
-    throw error;
+    logWithTimestamp(`Error in retweetPostsOnCurrentPage: ${error.message}`, 'RETWEET');
   }
+  
+  return retweetsCompleted;
 }
 
-// Function to generate random number within range
-function randomBetween(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-// Function to simulate human-like reading pause
-async function simulateReading(behavior: BehaviorPattern): Promise<void> {
-  const readingTime = randomBetween(behavior.readingTime.min, behavior.readingTime.max);
-  logWithTimestamp(`Simulating reading for ${readingTime}ms...`);
-  await new Promise(resolve => setTimeout(resolve, readingTime));
-}
-
-// Function to simulate human thinking pause
-async function simulateThinking(behavior: BehaviorPattern): Promise<void> {
-  if (Math.random() < behavior.thinkingPauseChance) {
-    const thinkingTime = randomBetween(behavior.thinkingPauseDuration.min, behavior.thinkingPauseDuration.max);
-    logWithTimestamp(`Taking a thinking pause for ${thinkingTime}ms...`);
-    await new Promise(resolve => setTimeout(resolve, thinkingTime));
-  }
-}
-
-// Function to perform human-like scrolling
-async function humanScroll(page: puppeteer.Page, behavior: BehaviorPattern, duration: number = 10000): Promise<void> {
-  logWithTimestamp(`Starting human-like scrolling for ${duration}ms with ${behavior.name} behavior`);
+// Function to search and retweet in home feed
+async function searchInHomeFeed(
+  page: puppeteer.Page, 
+  input: RetweetInput, 
+  behavior: BehaviorPattern
+): Promise<number> {
+  logWithTimestamp('Searching for matching posts in home feed...', 'RETWEET');
+  
+  // Ensure we're on Twitter home
+  await ensureOnTwitterHome(page);
+  
+  await saveScreenshot(page, 'twitter_home_retweet.png');
+  
+  const scrollTime = input.scrollTime || 10000;
+  const retweetCount = input.retweetCount || 1;
+  let retweetsCompleted = 0;
+  
+  // Behavior-specific pre-scroll activity
+  const preScrollTime = randomBetween(behavior.preScrollTime.min, behavior.preScrollTime.max);
+  logWithTimestamp(`Pre-scrolling for ${preScrollTime/1000}s with ${behavior.name} behavior`, 'RETWEET');
+  await humanScroll(page, preScrollTime, behavior);
+  
+  // Human-like scrolling and searching using shared utilities
+  logWithTimestamp(`Scrolling feed for ${scrollTime}ms looking for matching posts...`, 'RETWEET');
   
   const scrollStartTime = Date.now();
   let scrollCount = 0;
   
-  while (Date.now() - scrollStartTime < duration) {
+  while (Date.now() - scrollStartTime < scrollTime && retweetsCompleted < retweetCount) {
     scrollCount++;
     
-    // Random scroll distance based on behavior
+    // Use shared humanScroll with behavior-specific patterns
     const scrollDistance = randomBetween(
       behavior.scrollBehavior.scrollDistance.min, 
       behavior.scrollBehavior.scrollDistance.max
@@ -250,432 +304,128 @@ async function humanScroll(page: puppeteer.Page, behavior: BehaviorPattern, dura
       window.scrollBy(0, distance);
     }, scrollDistance);
     
-    // Pause between scrolls
+    // Take occasional screenshots
+    if (scrollCount % 2 === 0) {
+      await saveScreenshot(page, `feed_scroll_retweet_${scrollCount}.png`);
+    }
+    
+    // Try to retweet posts on current view
+    const retweetsInThisView = await retweetPostsOnCurrentPage(page, input, behavior, retweetCount - retweetsCompleted);
+    retweetsCompleted += retweetsInThisView;
+    
+    if (retweetsCompleted >= retweetCount) {
+      logWithTimestamp(`Completed ${retweetsCompleted} retweets in home feed`, 'RETWEET');
+      break;
+    }
+    
+    // Human-like pause between scrolls using shared utilities
     const pauseTime = randomBetween(behavior.scrollPauseTime.min, behavior.scrollPauseTime.max);
     await new Promise(resolve => setTimeout(resolve, pauseTime));
     
-    // Occasional thinking pauses
+    // Occasional thinking pauses based on behavior
     await simulateThinking(behavior);
   }
   
-  logWithTimestamp(`Completed scrolling (${scrollCount} scrolls)`);
+  return retweetsCompleted;
 }
 
-// Function to search for tweets in home feed
-async function searchInHomeFeed(
+// Function to search and retweet on profile page
+async function searchOnProfile(
   page: puppeteer.Page, 
   input: RetweetInput, 
   behavior: BehaviorPattern
-): Promise<boolean> {
-  logWithTimestamp('Starting search in home feed...');
+): Promise<number> {
+  logWithTimestamp('Searching for posts on profile page...', 'RETWEET');
   
-  try {
-    // Navigate to Twitter home if not already there
-    const currentUrl = await page.url();
-    if (!currentUrl.includes('twitter.com/home') && !currentUrl.includes('x.com/home')) {
-      logWithTimestamp('Navigating to Twitter home page...');
-      await promiseWithTimeout(
-        page.goto('https://twitter.com/home', { waitUntil: 'networkidle2' }),
-        60000,
-        'Navigation to Twitter home page timed out'
-      );
-    }
-    
-    await saveScreenshot(page, 'twitter_home_for_retweet.png');
-    
-    // Human-like pre-scrolling behavior
-    const preScrollTime = randomBetween(behavior.preScrollTime.min, behavior.preScrollTime.max);
-    logWithTimestamp(`Pre-scrolling for ${preScrollTime}ms before looking for tweets...`);
-    await humanScroll(page, behavior, preScrollTime);
-    
-    // Look for matching tweets while scrolling
-    const searchTerms = [
-      input.username ? input.username : '',
-      input.searchQuery ? input.searchQuery : '',
-      input.tweetContent ? input.tweetContent : ''
-    ].filter(term => term.length > 0);
-    
-    if (searchTerms.length === 0) {
-      logWithTimestamp('No search terms provided for home feed search');
-      return false;
-    }
-    
-    logWithTimestamp(`Searching for tweets containing: ${searchTerms.join(', ')}`);
-    
-    // Scroll and search for matching content
-    const searchStartTime = Date.now();
-    const maxSearchTime = input.scrollTime || 15000; // Default 15 seconds
-    let foundTargetPost = false;
-    
-    while (Date.now() - searchStartTime < maxSearchTime && !foundTargetPost) {
-      // Check for matching tweets
-      const matchingPosts = await page.evaluate((terms) => {
-        const posts = Array.from(document.querySelectorAll('div[data-testid="cellInnerDiv"]'));
-        const matching = posts.filter(post => {
-          if (!post.textContent) return false;
-          return terms.some(term => 
-            post.textContent!.toLowerCase().includes(term.toLowerCase())
-          );
-        });
-        return matching.length;
-      }, searchTerms);
-      
-      if (matchingPosts > 0) {
-        logWithTimestamp(`Found ${matchingPosts} matching posts in home feed`);
-        foundTargetPost = true;
-        break;
-      }
-      
-      // Continue scrolling
-      const scrollDistance = randomBetween(
-        behavior.scrollBehavior.scrollDistance.min,
-        behavior.scrollBehavior.scrollDistance.max
-      );
-      await page.evaluate((distance) => {
-        window.scrollBy(0, distance);
-      }, scrollDistance);
-      
-      await new Promise(resolve => setTimeout(resolve, 
-        randomBetween(behavior.scrollPauseTime.min, behavior.scrollPauseTime.max)
-      ));
-    }
-    
-    return foundTargetPost;
-    
-  } catch (error: any) {
-    logWithTimestamp(`Error during home feed search: ${error.message}`);
-    return false;
+  let profileUrl = input.profileUrl;
+  
+  // If no direct profile URL, try to construct one from username
+  if (!profileUrl && input.username) {
+    profileUrl = formatTwitterProfileUrl(input.username);
+    logWithTimestamp(`Constructed profile URL: ${profileUrl}`, 'RETWEET');
   }
-}
-
-// Function to search for profile via search box
-async function searchForProfile(
-  page: puppeteer.Page, 
-  input: RetweetInput, 
-  behavior: BehaviorPattern
-): Promise<boolean> {
-  logWithTimestamp('Attempting to search for profile using search box...');
   
-  try {
-    // Find search box
-    const searchBoxSelectors = [
-      'input[aria-label="Search query"]',
-      'input[data-testid="SearchBox_Search_Input"]',
-      'input[placeholder="Search Twitter"]',
-      'input[placeholder="Search"]'
-    ];
+  // If still no profile URL, try to search for the profile
+  if (!profileUrl && (input.username || input.searchQuery)) {
+    const searchTerm = input.username || input.searchQuery;
+    logWithTimestamp(`Searching for profile: ${searchTerm}`, 'RETWEET');
     
-    let searchBoxFound = false;
-    for (const selector of searchBoxSelectors) {
-      try {
-        const searchBox = await page.$(selector);
-        if (searchBox) {
-          logWithTimestamp(`Found search box with selector: ${selector}`);
-          
-          // Human-like hover and pause before clicking
-          await page.hover(selector);
-          await new Promise(resolve => setTimeout(resolve, 
-            randomBetween(behavior.hoverTime.min, behavior.hoverTime.max)
-          ));
-          await page.click(selector);
-          
-          searchBoxFound = true;
-          break;
-        }
-      } catch (err) {
-        continue;
-      }
-    }
+    // Navigate to search and look for profile
+    await humanNavigate(page, `https://twitter.com/search?q=${encodeURIComponent(searchTerm!)}&src=typed_query&f=user`, behavior);
     
-    if (!searchBoxFound) {
-      logWithTimestamp('Could not find search box');
-      return false;
-    }
-    
-    // Determine search query
-    const searchQuery = input.username || input.searchQuery || '';
-    if (!searchQuery) {
-      logWithTimestamp('No search query available');
-      return false;
-    }
-    
-    logWithTimestamp(`Typing search query: "${searchQuery}"`);
-    
-    // Human-like typing
-    for (let i = 0; i < searchQuery.length; i++) {
-      await page.keyboard.type(searchQuery[i], { 
-        delay: randomBetween(50, 150)
-      });
-      await simulateThinking(behavior);
-    }
-    
-    // Pause before pressing Enter
-    await new Promise(resolve => setTimeout(resolve, 
-      randomBetween(behavior.actionDelays.min, behavior.actionDelays.max)
-    ));
-    await page.keyboard.press('Enter');
-    
-    // Wait for search results
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await humanDelay(behavior, { min: 2000, max: 4000 });
     await saveScreenshot(page, 'search_results_retweet.png');
     
-    // Look for profile in results
-    const profileSelectors = [
-      `a[href="/${input.username}"]`,
+    // Try to find profile link in search results
+    const profileLink = await waitForAnySelector(page, [
+      `a[href="/${cleanUsername(searchTerm!)}"]`,
       'div[data-testid="UserCell"] a[role="link"]',
-      'div[data-testid="TypeaheadUser"]'
-    ];
+      'div[data-testid="TypeaheadUser"] a'
+    ], 5000).catch(() => null);
     
-    for (const selector of profileSelectors) {
-      try {
-        const profileLink = await page.$(selector);
-        if (profileLink) {
-          logWithTimestamp(`Found profile link with selector: ${selector}`);
-          
-          // Human-like hover and click
-          await profileLink.hover();
-          await new Promise(resolve => setTimeout(resolve, 
-            randomBetween(behavior.hoverTime.min, behavior.hoverTime.max)
-          ));
-          await profileLink.click();
-          
-          // Wait for profile to load
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          return true;
-        }
-      } catch (err) {
-        continue;
-      }
+    if (profileLink) {
+      await humanClick(page, profileLink.selector, behavior);
+      await humanDelay(behavior, { min: 2000, max: 4000 });
+    } else {
+      throw new Error(`Could not find profile for: ${searchTerm}`);
     }
-    
-    return false;
-    
-  } catch (error: any) {
-    logWithTimestamp(`Error during profile search: ${error.message}`);
-    return false;
+  } else if (profileUrl) {
+    // Navigate directly to profile
+    await humanNavigate(page, profileUrl, behavior);
+  } else {
+    throw new Error('No way to determine profile to visit');
   }
-}
-
-// Function to navigate directly to profile
-async function navigateToProfile(
-  page: puppeteer.Page, 
-  input: RetweetInput, 
-  behavior: BehaviorPattern
-): Promise<boolean> {
-  logWithTimestamp('Navigating directly to profile...');
   
-  try {
-    let profileUrl = input.profileUrl;
-    
-    // If no direct URL provided, construct from username
-    if (!profileUrl && input.username) {
-      profileUrl = `https://twitter.com/${input.username}`;
-    }
-    
-    if (!profileUrl) {
-      logWithTimestamp('No profile URL available for direct navigation');
-      return false;
-    }
-    
-    logWithTimestamp(`Navigating to profile: ${profileUrl}`);
-    
-    // Human-like pause before navigation
-    await new Promise(resolve => setTimeout(resolve, 
-      randomBetween(behavior.actionDelays.min, behavior.actionDelays.max)
-    ));
-    
-    try {
-      await promiseWithTimeout(
-        page.goto(profileUrl, { waitUntil: 'networkidle2' }),
-        60000,
-        'Navigation to profile timed out'
-      );
-    } catch (navError: any) {
-      logWithTimestamp(`Initial navigation failed: ${navError.message}. Trying with different strategy...`);
-      await promiseWithTimeout(
-        page.goto(profileUrl, { waitUntil: 'load' }),
-        60000,
-        'Second navigation attempt failed'
-      );
-    }
-    
-    await saveScreenshot(page, 'profile_page_retweet.png');
-    
-    // Human-like pause to "read" the profile
-    await simulateReading(behavior);
-    
-    return true;
-    
-  } catch (error: any) {
-    logWithTimestamp(`Error during direct profile navigation: ${error.message}`);
-    return false;
-  }
-}
-
-// Function to perform retweet action
-async function performRetweet(
-  page: puppeteer.Page, 
-  behavior: BehaviorPattern, 
-  isProfilePage: boolean = false
-): Promise<boolean> {
-  logWithTimestamp(`Attempting to retweet on ${isProfilePage ? 'profile' : 'feed'} page...`);
+  await saveScreenshot(page, 'profile_page_retweet.png');
   
-  try {
-    // Wait for tweets to load
-    const tweetSelectors = [
-      'article[data-testid="tweet"]',
-      'article[role="article"]',
-      'div[data-testid="cellInnerDiv"]',
-      '[data-testid="tweetText"]'
-    ];
-    
-    let tweetsLoaded = false;
-    for (const selector of tweetSelectors) {
-      try {
-        await promiseWithTimeout(
-          page.waitForSelector(selector, { timeout: 10000 }),
-          10000,
-          `Waiting for tweets with selector ${selector} timed out`
-        );
-        logWithTimestamp(`Found tweets with selector: ${selector}`);
-        tweetsLoaded = true;
-        break;
-      } catch (err) {
-        continue;
-      }
-    }
-    
-    if (!tweetsLoaded) {
-      logWithTimestamp('No tweets found to retweet');
-      return false;
-    }
-    
-    // If on profile page, scroll a bit to see more tweets
-    if (isProfilePage) {
-      logWithTimestamp('Scrolling profile page to see tweets...');
-      const scrollCount = randomBetween(
-        behavior.scrollBehavior.scrollsPerAction.min,
-        behavior.scrollBehavior.scrollsPerAction.max
-      );
-      
-      for (let i = 0; i < scrollCount; i++) {
-        const scrollDistance = randomBetween(
-          behavior.scrollBehavior.scrollDistance.min,
-          behavior.scrollBehavior.scrollDistance.max
-        );
-        await page.evaluate((distance) => {
-          window.scrollBy(0, distance);
-        }, scrollDistance);
-        
-        await new Promise(resolve => setTimeout(resolve, 
-          randomBetween(behavior.scrollPauseTime.min, behavior.scrollPauseTime.max)
-        ));
-      }
-    }
-    
-    await saveScreenshot(page, 'before_retweet_action.png');
-    
-    // Find retweet buttons
-    const retweetButtons = await page.$$('[data-testid="retweet"]');
-    
-    if (retweetButtons.length === 0) {
-      logWithTimestamp('No retweet buttons found');
-      return false;
-    }
-    
-    logWithTimestamp(`Found ${retweetButtons.length} retweet buttons`);
-    
-    // Human-like selection - don't always choose the first button
-    const buttonIndex = retweetButtons.length > 2 ? 
-      randomBetween(1, Math.min(retweetButtons.length - 1, 3)) : 0;
-    
-    logWithTimestamp(`Selecting retweet button #${buttonIndex + 1}`);
-    
-    // Check if already retweeted
-    const isAlreadyRetweeted = await page.evaluate((idx) => {
-      const buttons = Array.from(document.querySelectorAll('[data-testid="retweet"]'));
-      if (idx >= buttons.length) return true;
-      return buttons[idx].getAttribute('aria-pressed') === 'true';
-    }, buttonIndex);
-    
-    if (isAlreadyRetweeted) {
-      logWithTimestamp('Selected tweet is already retweeted, trying another...');
-      
-      // Try a different button
-      const newIndex = buttonIndex === 0 ? 
-        (retweetButtons.length > 1 ? 1 : 0) : 0;
-      
-      const alsoRetweeted = await page.evaluate((idx) => {
-        const buttons = Array.from(document.querySelectorAll('[data-testid="retweet"]'));
-        if (idx >= buttons.length) return true;
-        return buttons[idx].getAttribute('aria-pressed') === 'true';
-      }, newIndex);
-      
-      if (alsoRetweeted) {
-        logWithTimestamp('Multiple tweets already retweeted, skipping...');
-        return false;
-      }
-    }
-    
-    const targetIndex = isAlreadyRetweeted ? 
-      (buttonIndex === 0 ? (retweetButtons.length > 1 ? 1 : 0) : 0) : buttonIndex;
-    
-    // Human-like hover before clicking
-    await retweetButtons[targetIndex].hover();
-    await new Promise(resolve => setTimeout(resolve, 
-      randomBetween(behavior.hoverTime.min, behavior.hoverTime.max)
-    ));
-    
-    // Click retweet button
-    await retweetButtons[targetIndex].click();
-    
-    // Wait for retweet menu to appear
-    await new Promise(resolve => setTimeout(resolve, 
-      randomBetween(behavior.actionDelays.min, behavior.actionDelays.max)
-    ));
-    
-    await saveScreenshot(page, 'retweet_menu.png');
-    
-    // Find and click retweet confirmation
-    const confirmSelectors = [
-      '[data-testid="retweetConfirm"]',
-      'div[data-testid="retweetConfirm"]',
-      '[role="menuitem"]:has-text("Retweet")'
-    ];
-    
-    for (const selector of confirmSelectors) {
-      try {
-        const confirmButton = await page.$(selector);
-        if (confirmButton) {
-          logWithTimestamp(`Found retweet confirmation with selector: ${selector}`);
-          
-          // Human-like hover and pause
-          await confirmButton.hover();
-          await new Promise(resolve => setTimeout(resolve, 
-            randomBetween(behavior.hoverTime.min, behavior.hoverTime.max)
-          ));
-          
-          await confirmButton.click();
-          
-          // Wait for retweet to complete
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          await saveScreenshot(page, 'after_retweet.png');
-          
-          logWithTimestamp('Successfully retweeted!');
-          return true;
-        }
-      } catch (err) {
-        continue;
-      }
-    }
-    
-    logWithTimestamp('Could not find retweet confirmation button');
-    return false;
-    
-  } catch (error: any) {
-    logWithTimestamp(`Error during retweet action: ${error.message}`);
-    return false;
+  // Wait for tweets to load using shared utilities
+  const tweetsLoaded = await waitForAnySelector(page, [
+    'article[data-testid="tweet"]',
+    'article[role="article"]',
+    'div[data-testid="cellInnerDiv"]',
+    '[data-testid="tweetText"]'
+  ], 10000).catch(() => null);
+  
+  if (!tweetsLoaded) {
+    logWithTimestamp('No tweets found on profile page', 'RETWEET');
+    return 0;
   }
+  
+  logWithTimestamp('Profile tweets loaded successfully', 'RETWEET');
+  
+  // Behavior-specific browsing of profile
+  await simulateReading(behavior);
+  
+  const retweetCount = input.retweetCount || 1;
+  let retweetsCompleted = 0;
+  
+  // Scroll down profile to find tweets to retweet
+  logWithTimestamp('Scrolling down profile to find tweets to retweet...', 'RETWEET');
+  
+  const scrollActions = randomBetween(
+    behavior.scrollBehavior.scrollsPerAction.min,
+    behavior.scrollBehavior.scrollsPerAction.max
+  );
+  
+  for (let i = 0; i < scrollActions && retweetsCompleted < retweetCount; i++) {
+    const scrollDistance = randomBetween(
+      behavior.scrollBehavior.scrollDistance.min,
+      behavior.scrollBehavior.scrollDistance.max
+    );
+    
+    await page.evaluate((distance) => {
+      window.scrollBy(0, distance);
+    }, scrollDistance);
+    
+    await humanDelay(behavior, { min: 400, max: 800 });
+  }
+  
+  await saveScreenshot(page, 'profile_after_scroll_retweet.png');
+  
+  // Retweet posts on profile using shared utilities
+  retweetsCompleted = await retweetPostsOnCurrentPage(page, input, behavior, retweetCount);
+  
+  return retweetsCompleted;
 }
 
 // Main function to retweet tweets with human-like behavior
@@ -683,181 +433,127 @@ export async function retweetGenericTweetHuman(
   browser: puppeteer.Browser, 
   input: RetweetInput
 ): Promise<boolean> {
-  logWithTimestamp('='.repeat(50));
-  logWithTimestamp('Starting generic retweet operation with human-like behavior');
-  logWithTimestamp('='.repeat(50));
+  logWithTimestamp('='.repeat(50), 'RETWEET');
+  logWithTimestamp('Starting generic retweet operation with human-like behavior', 'RETWEET');
+  logWithTimestamp('='.repeat(50), 'RETWEET');
   
-  // Get behavior pattern
-  const behaviorType = input.behaviorType || BehaviorType.SOCIAL_ENGAGER;
-  const behavior = HUMAN_BEHAVIORS[behaviorType];
+  // Validate input
+  const validation = validateRetweetInput(input);
+  if (!validation.isValid) {
+    throw new Error(validation.error);
+  }
   
-  logWithTimestamp(`Using behavior pattern: ${behavior.name} - ${behavior.description}`);
-  logWithTimestamp(`Input: ${JSON.stringify(input, null, 2)}`);
+  // Set defaults and get behavior pattern
+  const retweetCount = input.retweetCount || 1;
+  const searchInFeed = input.searchInFeed !== false;
+  const visitProfile = input.visitProfile !== false;
+  const behavior = getBehaviorOrDefault(input.behaviorType);
+  
+  logWithTimestamp(`Using behavior pattern: ${behavior.name} - ${behavior.description}`, 'RETWEET');
+  logWithTimestamp(`Input: ${JSON.stringify(input, null, 2)}`, 'RETWEET');
   
   try {
-    // Get or create page
     const pages = await browser.pages();
     let page: puppeteer.Page;
     
     if (pages.length === 0) {
-      logWithTimestamp('No browser pages found. Creating a new page...');
+      logWithTimestamp('No browser pages found. Creating a new page...', 'RETWEET');
       page = await browser.newPage();
     } else {
       page = pages[0];
     }
     
-    logWithTimestamp(`Current page URL: ${await page.url()}`);
-    await saveScreenshot(page, 'retweet_initial_state.png');
+    logWithTimestamp(`Current page URL: ${await page.url()}`, 'RETWEET');
+    await saveScreenshot(page, 'retweet_operation_initial.png');
     
+    let retweetsCompleted = 0;
     let retweetSuccess = false;
-    const retweetCount = input.retweetCount || 1;
-    let completedRetweets = 0;
     
-    // Step 1: Search in home feed (if enabled)
-    if (input.searchInFeed !== false) { // Default is true
-      logWithTimestamp('Step 1: Searching for tweets in home feed...');
-      
-      const foundInFeed = await searchInHomeFeed(page, input, behavior);
-      
-      if (foundInFeed) {
-        logWithTimestamp('Found matching content in home feed, attempting to retweet...');
+    // Step 1: Try searching in home feed first (if enabled)
+    if (searchInFeed && retweetsCompleted < retweetCount) {
+      try {
+        logWithTimestamp('Attempting to find posts in home feed...', 'RETWEET');
+        const feedRetweets = await searchInHomeFeed(page, input, behavior);
+        retweetsCompleted += feedRetweets;
         
-        for (let i = 0; i < retweetCount && completedRetweets < retweetCount; i++) {
-          const success = await performRetweet(page, behavior, false);
-          if (success) {
-            completedRetweets++;
-            logWithTimestamp(`Completed retweet ${completedRetweets}/${retweetCount}`);
-            
-            if (completedRetweets < retweetCount) {
-              // Pause between retweets
-              await new Promise(resolve => setTimeout(resolve, 
-                randomBetween(behavior.actionDelays.min * 2, behavior.actionDelays.max * 2)
-              ));
-              
-              // Scroll a bit to find more content
-              await humanScroll(page, behavior, 5000);
-            }
-          }
-        }
-        
-        if (completedRetweets >= retweetCount) {
+        if (retweetsCompleted >= retweetCount) {
           retweetSuccess = true;
         }
+      } catch (feedError: any) {
+        logWithTimestamp(`Home feed search failed: ${feedError.message}`, 'RETWEET');
       }
     }
     
-    // Step 2: Search for profile (if not enough retweets from feed and enabled)
-    if (completedRetweets < retweetCount && input.visitProfile !== false) {
-      logWithTimestamp(`Step 2: Need ${retweetCount - completedRetweets} more retweets, searching for profile...`);
-      
-      let profileFound = false;
-      
-      // Try search box first
-      if (input.username || input.searchQuery) {
-        profileFound = await searchForProfile(page, input, behavior);
-      }
-      
-      // Fall back to direct navigation
-      if (!profileFound) {
-        profileFound = await navigateToProfile(page, input, behavior);
-      }
-      
-      if (profileFound) {
-        logWithTimestamp('Successfully found profile, attempting to retweet...');
+    // Step 2: Try profile page if we still need more retweets (if enabled)
+    if (visitProfile && retweetsCompleted < retweetCount) {
+      try {
+        logWithTimestamp(`Need ${retweetCount - retweetsCompleted} more retweets, trying profile page...`, 'RETWEET');
+        const profileRetweets = await searchOnProfile(page, input, behavior);
+        retweetsCompleted += profileRetweets;
         
-        // Wait for profile to fully load
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        for (let i = completedRetweets; i < retweetCount; i++) {
-          const success = await performRetweet(page, behavior, true);
-          if (success) {
-            completedRetweets++;
-            logWithTimestamp(`Completed retweet ${completedRetweets}/${retweetCount}`);
-            
-            if (completedRetweets < retweetCount) {
-              // Pause between retweets
-              await new Promise(resolve => setTimeout(resolve, 
-                randomBetween(behavior.actionDelays.min * 2, behavior.actionDelays.max * 2)
-              ));
-              
-              // Scroll to find more tweets
-              await humanScroll(page, behavior, 3000);
-            }
-          } else {
-            logWithTimestamp('Failed to retweet, trying to scroll and find more tweets...');
-            await humanScroll(page, behavior, 5000);
-          }
-        }
-        
-        if (completedRetweets >= retweetCount) {
+        if (retweetsCompleted >= retweetCount) {
           retweetSuccess = true;
         }
+      } catch (profileError: any) {
+        logWithTimestamp(`Profile search failed: ${profileError.message}`, 'RETWEET');
       }
     }
     
     // Human-like: Return to home page if successful
     if (retweetSuccess) {
-      logWithTimestamp('Retweet operation successful, returning to home page...');
+      logWithTimestamp('Retweet operation successful, returning to home page...', 'RETWEET');
       
-      await new Promise(resolve => setTimeout(resolve, 
-        randomBetween(behavior.actionDelays.min, behavior.actionDelays.max)
-      ));
+      await humanDelay(behavior);
       
-      // Try to find home button
-      const homeSelectors = [
+      // Try to find home button using shared selectors
+      const homeButton = await waitForAnySelector(page, [
         'a[aria-label="Home"]',
         'a[href="/home"]',
         'a[data-testid="AppTabBar_Home_Link"]'
-      ];
+      ], 5000).catch(() => null);
       
-      let homeFound = false;
-      for (const selector of homeSelectors) {
-        try {
-          const homeButton = await page.$(selector);
-          if (homeButton) {
-            await homeButton.hover();
-            await new Promise(resolve => setTimeout(resolve, 
-              randomBetween(behavior.hoverTime.min, behavior.hoverTime.max)
-            ));
-            await homeButton.click();
-            homeFound = true;
-            break;
-          }
-        } catch (err) {
-          continue;
-        }
-      }
-      
-      if (!homeFound) {
-        await page.goto('https://twitter.com/home', { waitUntil: 'load' });
+      if (homeButton) {
+        await humanHover(page, homeButton.selector, behavior);
+        await humanClick(page, homeButton.selector, behavior);
+      } else {
+        await humanNavigate(page, 'https://twitter.com/home', behavior);
       }
       
       // Final human-like browsing
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      await saveScreenshot(page, 'final_home_page.png');
+      await humanDelay(behavior, { min: 2000, max: 4000 });
+      await saveScreenshot(page, 'final_home_page_retweet.png');
       
-      // Brief final scroll
-      await humanScroll(page, behavior, 3000);
+      // Brief final scroll using shared utilities
+      await humanScroll(page, 3000, behavior);
     }
     
-    logWithTimestamp(`Retweet operation completed. Success: ${retweetSuccess}, Completed: ${completedRetweets}/${retweetCount}`);
-    return retweetSuccess;
+    // Final results
+    if (retweetsCompleted === 0) {
+      logWithTimestamp('❌ Could not retweet any tweets. No matching posts found or all were already retweeted.', 'RETWEET');
+      return false;
+    } else if (retweetsCompleted < retweetCount) {
+      logWithTimestamp(`⚠️ Partially completed: ${retweetsCompleted}/${retweetCount} retweets`, 'RETWEET');
+      return retweetsCompleted > 0;
+    } else {
+      logWithTimestamp(`✅ Successfully completed all ${retweetsCompleted} retweets`, 'RETWEET');
+      return true;
+    }
     
   } catch (error: any) {
-    logWithTimestamp(`Error during generic retweet operation: ${error.message}`);
+    logWithTimestamp(`❌ Error during retweet operation: ${error.message}`, 'RETWEET');
     
     try {
-      const pages = await browser.pages();
-      if (pages.length > 0) {
-        await saveScreenshot(pages[0], 'retweet_error.png');
-      }
+      const page = (await browser.pages())[0];
+      await saveScreenshot(page, 'retweet_operation_error.png');
     } catch (err) {
-      logWithTimestamp('Could not take error screenshot');
+      logWithTimestamp('Could not take error screenshot', 'RETWEET');
     }
     
-    return false;
+    throw error;
   }
 }
 
-// Export behavior types for external use
-export { HUMAN_BEHAVIORS };
+// Export everything needed
+export {
+  BehaviorType
+};
