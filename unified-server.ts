@@ -26,6 +26,12 @@ import {
   retweetGenericTweetHuman 
 } from './server/retweet/generic_retweet_human';
 
+import { 
+  NotificationInput, 
+  NotificationData,
+  checkNotificationsHuman 
+} from './server/notification/generic_notification_human';
+
 // Load environment variables
 dotenv.config();
 
@@ -40,7 +46,8 @@ function logWithTimestamp(message: string, service: string = 'UNIFIED'): void {
                    service === 'TWEET' ? '\x1b[32m' : 
                    service === 'LIKE' ? '\x1b[33m' : 
                    service === 'COMMENT' ? '\x1b[35m' : 
-                   service === 'RETWEET' ? '\x1b[34m' : '\x1b[37m';
+                   service === 'RETWEET' ? '\x1b[34m' : 
+                   service === 'NOTIFICATION' ? '\x1b[93m' : '\x1b[37m';
   const resetCode = '\x1b[0m';
   console.log(`${colorCode}[${timestamp}] [${service}] ${message}${resetCode}`);
 }
@@ -142,10 +149,36 @@ function validateRetweetInput(input: any): RetweetInput {
   }
 
   if (input.behaviorType && !Object.values(BehaviorType).includes(input.behaviorType)) {
-    throw new Error(`behaviorType must be one of: ${Object.values(BehaviorType).join(', ')}`);
+    throw new Error('Invalid behaviorType');
   }
 
   return input as RetweetInput;
+}
+
+function validateNotificationInput(input: any): NotificationInput {
+  const notificationInput: NotificationInput = {};
+
+  // Validate optional parameters
+  if (input.maxNotifications !== undefined) {
+    const maxNotifications = Number(input.maxNotifications);
+    if (isNaN(maxNotifications) || maxNotifications < 1 || maxNotifications > 50) {
+      throw new Error('maxNotifications must be a number between 1 and 50');
+    }
+    notificationInput.maxNotifications = maxNotifications;
+  }
+
+  if (input.includeOlderNotifications !== undefined) {
+    notificationInput.includeOlderNotifications = Boolean(input.includeOlderNotifications);
+  }
+
+  if (input.behaviorType !== undefined) {
+    if (typeof input.behaviorType !== 'string') {
+      throw new Error('behaviorType must be a string');
+    }
+    notificationInput.behaviorType = input.behaviorType;
+  }
+
+  return notificationInput;
 }
 
 // Service handlers
@@ -279,6 +312,46 @@ async function handleRetweetRequest(input: RetweetInput): Promise<any> {
   }
 }
 
+async function handleNotificationRequest(input: NotificationInput): Promise<any> {
+  logWithTimestamp(`Processing notification check request with options: ${JSON.stringify({
+    maxNotifications: input.maxNotifications || 10,
+    includeOlderNotifications: input.includeOlderNotifications || false,
+    behaviorType: input.behaviorType || 'default'
+  })}`, 'NOTIFICATION');
+
+  try {
+    const browser = await getBrowserConnection();
+    
+    const startTime = Date.now();
+    const notifications = await checkNotificationsHuman(browser, input);
+    const duration = Date.now() - startTime;
+    
+    logWithTimestamp(`Notification check completed successfully in ${duration}ms`, 'NOTIFICATION');
+    logWithTimestamp(`Found ${notifications.length} relevant notifications (comments/mentions)`, 'NOTIFICATION');
+    
+    return {
+      message: 'Notification check completed successfully',
+      notifications: notifications,
+      summary: {
+        totalFound: notifications.length,
+        comments: notifications.filter(n => n.type === 'comment').length,
+        mentions: notifications.filter(n => n.type === 'mention').length,
+        verifiedUsers: notifications.filter(n => n.isVerified).length
+      },
+      options: {
+        maxNotifications: input.maxNotifications || 10,
+        includeOlderNotifications: input.includeOlderNotifications || false,
+        behaviorType: input.behaviorType || 'default'
+      },
+      duration: `${duration}ms`,
+      timestamp: new Date().toISOString()
+    };
+  } catch (error: any) {
+    logWithTimestamp(`Notification check failed: ${error.message}`, 'NOTIFICATION');
+    throw new Error(`Notification check failed: ${error.message}`);
+  }
+}
+
 // Status handler
 async function handleStatus(): Promise<any> {
   const browser = await getBrowserConnection().catch(() => null);
@@ -305,6 +378,10 @@ async function handleStatus(): Promise<any> {
       retweet: {
         endpoint: 'POST /api/retweet',
         description: 'Retweet posts with different behavior patterns'
+      },
+      notification: {
+        endpoint: 'POST /api/notification',
+        description: 'Check for unread notifications (comments and mentions only)'
       }
     }
   };
@@ -393,6 +470,31 @@ function handleHelp(): any {
         }
       },
       
+      'POST /api/notification': {
+        description: 'Check for unread notifications with human-like behavior (comments and mentions only)',
+        body: {
+          note: 'All parameters are optional - empty request body is valid',
+          maxNotifications: 'number (1-50, default: 10) - Maximum notifications to check',
+          includeOlderNotifications: 'boolean (default: false) - Whether to scroll and check older notifications',
+          behaviorType: 'string - Human behavior pattern to use for browsing'
+        },
+        example: {
+          maxNotifications: 15,
+          includeOlderNotifications: true,
+          behaviorType: 'social_engager'
+        },
+        response: {
+          notifications: 'array - Array of comment/mention notification objects',
+          summary: 'object - Summary statistics of found notifications',
+          options: 'object - Request options used',
+          duration: 'string - Time taken to check notifications'
+        },
+        notificationTypes: {
+          comment: 'Someone replied to or commented on your tweet',
+          mention: 'Someone mentioned or tagged you in their tweet'
+        }
+      },
+      
       'GET /api/status': {
         description: 'Get server status and browser connection state'
       },
@@ -418,6 +520,14 @@ function handleHelp(): any {
       {
         description: 'Retweet with thoughtful behavior',
         curl: `curl -X POST http://localhost:${PORT}/api/retweet -H "Content-Type: application/json" -d '{"username": "PTIofficial", "behaviorType": "thoughtful_writer"}'`
+      },
+      {
+        description: 'Check for unread notifications (empty request body)',
+        curl: `curl -X POST http://localhost:${PORT}/api/notification`
+      },
+      {
+        description: 'Check notifications with custom settings',
+        curl: `curl -X POST http://localhost:${PORT}/api/notification -H "Content-Type: application/json" -d '{"maxNotifications": 20, "includeOlderNotifications": true}'`
       }
     ]
   };
@@ -463,6 +573,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const result = await handleRetweetRequest(validatedInput);
       sendSuccess(res, result, 'RETWEET');
       
+    } else if (pathname === '/api/notification' && method === 'POST') {
+      const body = await parseBody(req);
+      const validatedInput = validateNotificationInput(body);
+      const result = await handleNotificationRequest(validatedInput);
+      sendSuccess(res, result, 'NOTIFICATION');
+      
     } else if (pathname === '/api/status' && method === 'GET') {
       const status = await handleStatus();
       sendSuccess(res, status);
@@ -500,6 +616,7 @@ server.listen(PORT, HOST, () => {
   logWithTimestamp(`  👍 POST http://${HOST}:${PORT}/api/like       - Like tweets`, 'UNIFIED');
   logWithTimestamp(`  💬 POST http://${HOST}:${PORT}/api/comment    - Comment on tweets`, 'UNIFIED');
   logWithTimestamp(`  🔄 POST http://${HOST}:${PORT}/api/retweet    - Retweet posts`, 'UNIFIED');
+  logWithTimestamp(`  🔔 POST http://${HOST}:${PORT}/api/notification - Check notifications`, 'UNIFIED');
   logWithTimestamp(`  📊 GET  http://${HOST}:${PORT}/api/status     - Server status`, 'UNIFIED');
   logWithTimestamp(`  📖 GET  http://${HOST}:${PORT}/api/help       - API documentation`, 'UNIFIED');
   logWithTimestamp('='.repeat(80), 'UNIFIED');
@@ -541,4 +658,4 @@ process.on('unhandledRejection', (reason, promise) => {
   process.exit(1);
 });
 
-export { server, handleTweetRequest, handleLikeRequest, handleCommentRequest, handleRetweetRequest };
+export { server, handleTweetRequest, handleLikeRequest, handleCommentRequest, handleRetweetRequest, handleNotificationRequest };
