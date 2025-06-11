@@ -42,7 +42,7 @@ export enum NotificationType {
   OTHER = 'other'
 }
 
-// Define notification interface
+// Enhanced notification interface with original post context
 export interface NotificationData {
   type: NotificationType;
   username: string;
@@ -50,18 +50,32 @@ export interface NotificationData {
   userHandle: string;
   content: string;
   originalTweetContent?: string;
+  originalPostData?: {
+    postText: string;
+    postUrl: string;
+    postTimestamp: string;
+    postLikes: number;
+    postRetweets: number;
+    postReplies: number;
+    postAuthor: string;
+    postAuthorHandle: string;
+    isVerified: boolean;
+  };
   timestamp: string;
+  notificationAge: string; // e.g., "2h", "1d", "3h"
   profileUrl: string;
   notificationText: string;
   isVerified: boolean;
   actionTaken: string; // e.g., "commented on your tweet", "mentioned you in a tweet"
+  isFromTwitterCompany: boolean; // Flag to identify Twitter official notifications
 }
 
-// Define notification input interface
+// Enhanced notification input interface with time filtering
 export interface NotificationInput {
   behaviorType?: BehaviorType; // Human behavior pattern to use (default: SOCIAL_ENGAGER)
   maxNotifications?: number; // Maximum number of notifications to process (default: 10)
   includeOlderNotifications?: boolean; // Whether to check older notifications (default: false)
+  timeRangeHours?: number; // How many hours back to check notifications (default: 24)
 }
 
 // Function to validate notification input
@@ -73,7 +87,196 @@ function validateNotificationInput(input: NotificationInput): { isValid: boolean
     };
   }
   
+  if (input.timeRangeHours && (input.timeRangeHours < 1 || input.timeRangeHours > 168)) { // Max 1 week
+    return {
+      isValid: false,
+      error: 'timeRangeHours must be between 1 and 168 (1 week)'
+    };
+  }
+  
   return { isValid: true };
+}
+
+// Function to check if notification is from Twitter company
+function isTwitterCompanyNotification(notificationText: string, username: string): boolean {
+  const text = notificationText.toLowerCase();
+  const handle = username.toLowerCase();
+  
+  // Twitter official accounts
+  const twitterAccounts = [
+    'twitter', 'x', 'twittersupport', 'xsupport', 'twitterbusiness', 
+    'twitterdev', 'twittersafety', 'xsafety', 'twitterapi', 'verified'
+  ];
+  
+  if (twitterAccounts.includes(handle)) {
+    return true;
+  }
+  
+  // System notification patterns
+  const systemPatterns = [
+    'login', 'suspicious', 'security', 'device', 'review it now',
+    'anniversary', 'birthday', 'account', 'password', 'verification',
+    'terms of service', 'privacy policy', 'suspended', 'limited',
+    'feature update', 'new feature', 'platform update', 'welcome to',
+    'get started', 'explore', 'discover', 'recommended', 'trending'
+  ];
+  
+  return systemPatterns.some(pattern => text.includes(pattern));
+}
+
+// Function to check if notification is within time range
+function isWithinTimeRange(timestamp: string, timeRangeHours: number): boolean {
+  try {
+    const notificationTime = new Date(timestamp);
+    const currentTime = new Date();
+    const timeDifferenceHours = (currentTime.getTime() - notificationTime.getTime()) / (1000 * 60 * 60);
+    
+    return timeDifferenceHours <= timeRangeHours;
+  } catch (error) {
+    // If we can't parse timestamp, assume it's recent
+    return true;
+  }
+}
+
+// Function to extract original post data for comments
+async function extractOriginalPostData(page: puppeteer.Page, notificationElement: puppeteer.ElementHandle): Promise<any> {
+  try {
+    const postData = await page.evaluate((element) => {
+      // Look for the original post within the notification
+      const postSelectors = [
+        '[data-testid="tweet"]',
+        '[role="article"]',
+        '.css-1dbjc4n[data-testid="tweet"]'
+      ];
+      
+      let originalPost = null;
+      
+      for (const selector of postSelectors) {
+        originalPost = element.querySelector(selector);
+        if (originalPost) break;
+      }
+      
+      if (!originalPost) {
+        // Try to find quoted tweet or referenced post
+        const quotedTweet = element.querySelector('[data-testid="quoteTweet"]') || 
+                           element.querySelector('.QuoteTweet');
+        if (quotedTweet) {
+          originalPost = quotedTweet;
+        }
+      }
+      
+      if (originalPost) {
+        // Extract post data
+        const postText = originalPost.querySelector('[data-testid="tweetText"]')?.textContent || '';
+        const postAuthor = originalPost.querySelector('[data-testid="User-Name"]')?.textContent || '';
+        const postHandle = originalPost.querySelector('[data-testid="username"]')?.textContent || '';
+        
+        // Extract engagement metrics
+        const likes = originalPost.querySelector('[data-testid="like"]')?.textContent || '0';
+        const retweets = originalPost.querySelector('[data-testid="retweet"]')?.textContent || '0';
+        const replies = originalPost.querySelector('[data-testid="reply"]')?.textContent || '0';
+        
+        // Extract timestamp
+        const timeElement = originalPost.querySelector('time') || 
+                           originalPost.querySelector('[datetime]');
+        const postTimestamp = timeElement?.getAttribute('datetime') || 
+                             timeElement?.textContent || '';
+        
+        // Check if author is verified
+        const isVerified = !!originalPost.querySelector('[data-testid="verificationBadge"]');
+        
+        // Try to extract post URL
+        const linkElement = originalPost.querySelector('a[href*="/status/"]');
+        const postUrl = linkElement ? `https://twitter.com${linkElement.getAttribute('href')}` : '';
+        
+        return {
+          postText,
+          postUrl,
+          postTimestamp,
+          postLikes: parseInt(likes.replace(/[^\d]/g, '')) || 0,
+          postRetweets: parseInt(retweets.replace(/[^\d]/g, '')) || 0,
+          postReplies: parseInt(replies.replace(/[^\d]/g, '')) || 0,
+          postAuthor,
+          postAuthorHandle: postHandle.replace('@', ''),
+          isVerified
+        };
+      }
+      
+      return null;
+    }, notificationElement);
+    
+    return postData;
+  } catch (error: any) {
+    logWithTimestamp(`Error extracting original post data: ${error.message}`, 'NOTIFICATION');
+    return null;
+  }
+}
+
+// Enhanced timestamp extraction with age calculation
+async function extractTimestampWithAge(page: puppeteer.Page, notificationElement: puppeteer.ElementHandle): Promise<{timestamp: string, age: string}> {
+  try {
+    const timeData = await page.evaluate((element) => {
+      const timeSelectors = [
+        'time',
+        '[datetime]',
+        'span[title]',
+        'a[title]'
+      ];
+      
+      for (const selector of timeSelectors) {
+        const timeElement = element.querySelector(selector);
+        if (timeElement) {
+          const datetime = timeElement.getAttribute('datetime') || 
+                          timeElement.getAttribute('title') || 
+                          timeElement.textContent;
+          if (datetime) {
+            return datetime;
+          }
+        }
+      }
+      
+      // Look for relative time patterns in text
+      const text = element.textContent || '';
+      const timeMatch = text.match(/(\d+[smhd]|now|\d+\s*(second|minute|hour|day)s?\s*ago)/i);
+      if (timeMatch) {
+        return timeMatch[0];
+      }
+      
+      return null;
+    }, notificationElement);
+    
+    let timestamp = new Date().toISOString();
+    let age = 'unknown';
+    
+    if (timeData) {
+      // Try to parse as ISO date first
+      const parsedDate = new Date(timeData);
+      if (!isNaN(parsedDate.getTime())) {
+        timestamp = parsedDate.toISOString();
+        age = timeData;
+      } else {
+        // Handle relative time formats
+        age = timeData;
+        // Convert relative time to approximate timestamp
+        // This is a simplified conversion - you might want to make it more precise
+        if (timeData.includes('h')) {
+          const hours = parseInt(timeData);
+          timestamp = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+        } else if (timeData.includes('d')) {
+          const days = parseInt(timeData);
+          timestamp = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+        }
+      }
+    }
+    
+    return { timestamp, age };
+  } catch (error: any) {
+    logWithTimestamp(`Error extracting timestamp: ${error.message}`, 'NOTIFICATION');
+    return { 
+      timestamp: new Date().toISOString(), 
+      age: 'unknown' 
+    };
+  }
 }
 
 // Enhanced notification type detection with more comprehensive patterns
@@ -413,10 +616,12 @@ export async function checkNotificationsHuman(browser: puppeteer.Browser, input:
   // Set defaults and get behavior pattern
   const maxNotifications = input.maxNotifications || 10;
   const includeOlderNotifications = input.includeOlderNotifications || false;
+  const timeRangeHours = input.timeRangeHours || 24; // Default to 24 hours
   const behavior = getBehaviorOrDefault(input.behaviorType);
   
   logWithTimestamp(`Using behavior pattern: ${behavior.name}`, 'NOTIFICATION');
   logWithTimestamp(`Max notifications to check: ${maxNotifications}`, 'NOTIFICATION');
+  logWithTimestamp(`Time range: ${timeRangeHours} hours`, 'NOTIFICATION');
   
   const notifications: NotificationData[] = [];
   
@@ -532,7 +737,30 @@ export async function checkNotificationsHuman(browser: puppeteer.Browser, input:
           // Extract detailed information
           const userInfo = await extractUserInfo(page, notificationElement);
           const contentInfo = await extractNotificationContent(page, notificationElement);
-          const timestamp = await extractTimestamp(page, notificationElement);
+          const timeData = await extractTimestampWithAge(page, notificationElement);
+          
+          // Check if it's from Twitter company
+          const isFromCompany = isTwitterCompanyNotification(notificationText, userInfo.username);
+          
+          // Check if within time range
+          const withinTimeRange = isWithinTimeRange(timeData.timestamp, timeRangeHours);
+          
+          // Skip if from Twitter company or outside time range
+          if (isFromCompany) {
+            logWithTimestamp(`Skipping Twitter company notification from @${userInfo.username}`, 'NOTIFICATION');
+            continue;
+          }
+          
+          if (!withinTimeRange) {
+            logWithTimestamp(`Skipping notification outside time range (${timeData.age})`, 'NOTIFICATION');
+            continue;
+          }
+          
+          // Extract original post data for comments
+          let originalPostData = null;
+          if (notificationType === NotificationType.COMMENT) {
+            originalPostData = await extractOriginalPostData(page, notificationElement);
+          }
           
           // Only add if we have meaningful data
           if (userInfo.username !== 'unknown' || contentInfo.content !== 'No content extracted') {
@@ -543,17 +771,20 @@ export async function checkNotificationsHuman(browser: puppeteer.Browser, input:
               userHandle: userInfo.userHandle,
               content: contentInfo.content,
               originalTweetContent: contentInfo.originalTweetContent,
-              timestamp: timestamp,
+              originalPostData: originalPostData,
+              timestamp: timeData.timestamp,
+              notificationAge: timeData.age,
               profileUrl: userInfo.profileUrl,
               notificationText: contentInfo.notificationText,
               isVerified: userInfo.isVerified,
-              actionTaken: contentInfo.actionTaken
+              actionTaken: contentInfo.actionTaken,
+              isFromTwitterCompany: isFromCompany
             };
             
             notifications.push(notification);
             processedCount++;
             
-            logWithTimestamp(`✅ Added ${notificationType} notification from @${userInfo.userHandle}`, 'NOTIFICATION');
+            logWithTimestamp(`✅ Added ${notificationType} notification from @${userInfo.userHandle} (${timeData.age})`, 'NOTIFICATION');
           } else {
             logWithTimestamp(`⚠️ Skipping notification with insufficient data`, 'NOTIFICATION');
           }

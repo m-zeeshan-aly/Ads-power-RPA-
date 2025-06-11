@@ -171,6 +171,14 @@ function validateNotificationInput(input: any): NotificationInput {
     notificationInput.includeOlderNotifications = Boolean(input.includeOlderNotifications);
   }
 
+  if (input.timeRangeHours !== undefined) {
+    const timeRangeHours = Number(input.timeRangeHours);
+    if (isNaN(timeRangeHours) || timeRangeHours < 1 || timeRangeHours > 168) { // Max 1 week
+      throw new Error('timeRangeHours must be a number between 1 and 168 (1 week)');
+    }
+    notificationInput.timeRangeHours = timeRangeHours;
+  }
+
   if (input.behaviorType !== undefined) {
     if (typeof input.behaviorType !== 'string') {
       throw new Error('behaviorType must be a string');
@@ -380,7 +388,7 @@ async function handleStatus(): Promise<any> {
         description: 'Retweet posts with different behavior patterns'
       },
       notification: {
-        endpoint: 'POST /api/notification',
+        endpoint: 'GET /api/notification',
         description: 'Check for unread notifications (comments and mentions only)'
       }
     }
@@ -470,27 +478,24 @@ function handleHelp(): any {
         }
       },
       
-      'POST /api/notification': {
+      'GET /api/notification': {
         description: 'Check for unread notifications with human-like behavior (comments and mentions only)',
-        body: {
-          note: 'All parameters are optional - empty request body is valid',
+        parameters: {
+          note: 'All parameters are optional via query string',
           maxNotifications: 'number (1-50, default: 10) - Maximum notifications to check',
           includeOlderNotifications: 'boolean (default: false) - Whether to scroll and check older notifications',
+          timeRangeHours: 'number (1-168, default: 24) - How many hours back to check',
           behaviorType: 'string - Human behavior pattern to use for browsing'
         },
-        example: {
-          maxNotifications: 15,
-          includeOlderNotifications: true,
-          behaviorType: 'social_engager'
-        },
+        example: '?maxNotifications=15&includeOlderNotifications=true&timeRangeHours=48&behaviorType=social_engager',
         response: {
-          notifications: 'array - Array of comment/mention notification objects',
+          notifications: 'array - Array of comment/mention notification objects with original post data',
           summary: 'object - Summary statistics of found notifications',
           options: 'object - Request options used',
           duration: 'string - Time taken to check notifications'
         },
         notificationTypes: {
-          comment: 'Someone replied to or commented on your tweet',
+          comment: 'Someone replied to or commented on your tweet (includes original post data)',
           mention: 'Someone mentioned or tagged you in their tweet'
         }
       },
@@ -522,12 +527,12 @@ function handleHelp(): any {
         curl: `curl -X POST http://localhost:${PORT}/api/retweet -H "Content-Type: application/json" -d '{"username": "PTIofficial", "behaviorType": "thoughtful_writer"}'`
       },
       {
-        description: 'Check for unread notifications (empty request body)',
-        curl: `curl -X POST http://localhost:${PORT}/api/notification`
+        description: 'Check for unread notifications (basic usage)',
+        curl: `curl "http://localhost:${PORT}/api/notification"`
       },
       {
-        description: 'Check notifications with custom settings',
-        curl: `curl -X POST http://localhost:${PORT}/api/notification -H "Content-Type: application/json" -d '{"maxNotifications": 20, "includeOlderNotifications": true}'`
+        description: 'Check notifications with time filter and custom settings',
+        curl: `curl "http://localhost:${PORT}/api/notification?timeRangeHours=48&maxNotifications=20&includeOlderNotifications=true"`
       }
     ]
   };
@@ -573,9 +578,10 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const result = await handleRetweetRequest(validatedInput);
       sendSuccess(res, result, 'RETWEET');
       
-    } else if (pathname === '/api/notification' && method === 'POST') {
-      const body = await parseBody(req);
-      const validatedInput = validateNotificationInput(body);
+    } else if (pathname === '/api/notification' && method === 'GET') {
+      const parsedUrl = url.parse(req.url || '', true);
+      const query = parsedUrl.query;
+      const validatedInput = validateNotificationInput(query);
       const result = await handleNotificationRequest(validatedInput);
       sendSuccess(res, result, 'NOTIFICATION');
       
@@ -616,7 +622,7 @@ server.listen(PORT, HOST, () => {
   logWithTimestamp(`  👍 POST http://${HOST}:${PORT}/api/like       - Like tweets`, 'UNIFIED');
   logWithTimestamp(`  💬 POST http://${HOST}:${PORT}/api/comment    - Comment on tweets`, 'UNIFIED');
   logWithTimestamp(`  🔄 POST http://${HOST}:${PORT}/api/retweet    - Retweet posts`, 'UNIFIED');
-  logWithTimestamp(`  🔔 POST http://${HOST}:${PORT}/api/notification - Check notifications`, 'UNIFIED');
+  logWithTimestamp(`  🔔 GET  http://${HOST}:${PORT}/api/notification - Check notifications`, 'UNIFIED');
   logWithTimestamp(`  📊 GET  http://${HOST}:${PORT}/api/status     - Server status`, 'UNIFIED');
   logWithTimestamp(`  📖 GET  http://${HOST}:${PORT}/api/help       - API documentation`, 'UNIFIED');
   logWithTimestamp('='.repeat(80), 'UNIFIED');
