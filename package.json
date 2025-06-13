@@ -30,6 +30,8 @@
     "retweet-server": "ts-node server/retweet/http-retweet-server.ts",
     "test-retweet-client": "ts-node server/retweet/test-retweet-client.ts",
     "generic-retweet": "ts-node server/retweet/generic_retweet_human.ts",
+    "post-server": "ts-node server/monitor-account/simple-post-server.ts",
+    "test-post-server": "ts-node server/monitor-account/test-client.ts",
     "unified-server": "ts-node unified-server.ts",
     "test-unified": "ts-node test-unified-client.ts"
   },
