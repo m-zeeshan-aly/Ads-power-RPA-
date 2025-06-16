@@ -120,6 +120,11 @@ export async function humanHover(
   selector: string, 
   behavior?: BehaviorPattern
 ): Promise<void> {
+  // Validate selector to prevent empty selector errors
+  if (!selector || typeof selector !== 'string' || selector.trim() === '') {
+    throw new Error(`Invalid selector provided to humanHover: "${selector}"`);
+  }
+  
   let hoverTime: number;
   
   if (behavior) {
@@ -138,6 +143,11 @@ export async function humanClick(
   selector: string, 
   behavior?: BehaviorPattern
 ): Promise<void> {
+  // Validate selector to prevent empty selector errors
+  if (!selector || typeof selector !== 'string' || selector.trim() === '') {
+    throw new Error(`Invalid selector provided to humanClick: "${selector}"`);
+  }
+  
   // Hover before clicking
   await humanHover(page, selector, behavior);
   
@@ -159,6 +169,11 @@ export async function humanWaitForSelector(
   selector: string,
   options: { timeout?: number; visible?: boolean } = {}
 ): Promise<puppeteer.ElementHandle<Element> | null> {
+  // Validate selector to prevent empty selector errors
+  if (!selector || typeof selector !== 'string' || selector.trim() === '') {
+    throw new Error(`Invalid selector provided to humanWaitForSelector: "${selector}"`);
+  }
+  
   const timeout = options.timeout || 30000;
   const visible = options.visible !== false;
   

@@ -32,6 +32,11 @@ import {
   checkNotificationsHuman 
 } from './server/notification/generic_notification_human';
 
+import { 
+  NotificationReplyInput, 
+  replyToNotificationSimple 
+} from './server/notification/simple-notification-reply';
+
 // Load environment variables
 dotenv.config();
 
@@ -47,7 +52,8 @@ function logWithTimestamp(message: string, service: string = 'UNIFIED'): void {
                    service === 'LIKE' ? '\x1b[33m' : 
                    service === 'COMMENT' ? '\x1b[35m' : 
                    service === 'RETWEET' ? '\x1b[34m' : 
-                   service === 'NOTIFICATION' ? '\x1b[93m' : '\x1b[37m';
+                   service === 'NOTIFICATION' ? '\x1b[93m' : 
+                   service === 'REPLY' ? '\x1b[96m' : '\x1b[37m';
   const resetCode = '\x1b[0m';
   console.log(`${colorCode}[${timestamp}] [${service}] ${message}${resetCode}`);
 }
@@ -187,6 +193,40 @@ function validateNotificationInput(input: any): NotificationInput {
   }
 
   return notificationInput;
+}
+
+function validateNotificationReplyInput(input: any): NotificationReplyInput {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Request body must be a valid JSON object');
+  }
+
+  if (!input.username || typeof input.username !== 'string') {
+    throw new Error('username is required and must be a string');
+  }
+
+  if (!input.replyMessage || typeof input.replyMessage !== 'string') {
+    throw new Error('replyMessage is required and must be a string');
+  }
+
+  if (input.replyMessage.length > 280) {
+    throw new Error('replyMessage must be 280 characters or less');
+  }
+
+  // Validate optional parameters
+  if (input.notificationContent && typeof input.notificationContent !== 'string') {
+    throw new Error('notificationContent must be a string');
+  }
+
+  if (input.behaviorType && !Object.values(BehaviorType).includes(input.behaviorType)) {
+    throw new Error('Invalid behaviorType');
+  }
+
+  return {
+    username: input.username,
+    replyMessage: input.replyMessage,
+    notificationContent: input.notificationContent,
+    behaviorType: input.behaviorType
+  } as NotificationReplyInput;
 }
 
 // Service handlers
@@ -360,6 +400,35 @@ async function handleNotificationRequest(input: NotificationInput): Promise<any>
   }
 }
 
+async function handleNotificationReplyRequest(input: NotificationReplyInput): Promise<any> {
+  logWithTimestamp(`Processing notification reply request for @${input.username}: "${input.replyMessage.substring(0, 50)}${input.replyMessage.length > 50 ? '...' : ''}"`, 'REPLY');
+
+  try {
+    const browser = await getBrowserConnection();
+    
+    const startTime = Date.now();
+    await replyToNotificationSimple(browser, input);
+    const duration = Date.now() - startTime;
+    
+    logWithTimestamp(`Notification reply completed successfully in ${duration}ms`, 'REPLY');
+    
+    return {
+      message: 'Notification reply sent successfully',
+      input: {
+        targetUsername: input.username,
+        replyMessage: input.replyMessage,
+        notificationContent: input.notificationContent,
+        behaviorType: input.behaviorType || 'default'
+      },
+      duration: `${duration}ms`,
+      timestamp: new Date().toISOString()
+    };
+  } catch (error: any) {
+    logWithTimestamp(`Notification reply failed: ${error.message}`, 'REPLY');
+    throw new Error(`Notification reply failed: ${error.message}`);
+  }
+}
+
 // Status handler
 async function handleStatus(): Promise<any> {
   const browser = await getBrowserConnection().catch(() => null);
@@ -500,6 +569,35 @@ function handleHelp(): any {
         }
       },
       
+      'POST /api/notification/reply': {
+        description: 'Reply to a specific notification with human-like behavior',
+        parameters: {
+          required: {
+            username: 'string - Username of the person whose notification to reply to (e.g., "john_doe")',
+            replyMessage: 'string - The reply message to send (max 280 characters)'
+          },
+          optional: {
+            notificationContent: 'string - Partial content to match in the notification for better targeting',
+            notificationText: 'string - Exact notification text to match',
+            notificationId: 'string - Specific notification ID if available',
+            maxNotificationsToCheck: 'number (1-50, default: 20) - Maximum notifications to scan',
+            scrollAttempts: 'number (1-10, default: 3) - Times to scroll if notification not found',
+            waitAfterReply: 'number (1000-30000, default: 3000) - Wait time after sending reply in ms',
+            behaviorType: 'string - Human behavior pattern to use'
+          }
+        },
+        humanBehavior: {
+          process: 'Navigate to notifications → Find target notification → Open notification → Type reply with human timing → Send reply',
+          features: 'Realistic scrolling, reading pauses, natural typing speed, hover effects, human-like delays'
+        },
+        example: {
+          username: 'alice123',
+          replyMessage: 'Thanks for your thoughtful comment! I appreciate the feedback. 👍',
+          notificationContent: 'great insights on AI technology',
+          behaviorType: 'social_engager'
+        }
+      },
+      
       'GET /api/status': {
         description: 'Get server status and browser connection state'
       },
@@ -533,6 +631,18 @@ function handleHelp(): any {
       {
         description: 'Check notifications with time filter and custom settings',
         curl: `curl "http://localhost:${PORT}/api/notification?timeRangeHours=48&maxNotifications=20&includeOlderNotifications=true"`
+      },
+      {
+        description: 'Reply to a notification from a specific user',
+        curl: `curl -X POST http://localhost:${PORT}/api/notification/reply -H "Content-Type: application/json" -d '{"username": "alice123", "replyMessage": "Thanks for your comment! 👍"}'`
+      },
+      {
+        description: 'Reply with content matching for precise targeting',
+        curl: `curl -X POST http://localhost:${PORT}/api/notification/reply -H "Content-Type: application/json" -d '{"username": "bob_smith", "replyMessage": "I totally agree with your point!", "notificationContent": "interesting perspective on AI"}'`
+      },
+      {
+        description: 'Reply with custom behavior and search parameters',
+        curl: `curl -X POST http://localhost:${PORT}/api/notification/reply -H "Content-Type: application/json" -d '{"username": "charlie_dev", "replyMessage": "Great question! Let me explain...", "maxNotificationsToCheck": 30, "behaviorType": "thoughtful_writer"}'`
       }
     ]
   };
@@ -585,6 +695,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const result = await handleNotificationRequest(validatedInput);
       sendSuccess(res, result, 'NOTIFICATION');
       
+    } else if (pathname === '/api/notification/reply' && method === 'POST') {
+      const body = await parseBody(req);
+      const validatedInput = validateNotificationReplyInput(body);
+      const result = await handleNotificationReplyRequest(validatedInput);
+      sendSuccess(res, result, 'REPLY');
+      
     } else if (pathname === '/api/status' && method === 'GET') {
       const status = await handleStatus();
       sendSuccess(res, status);
@@ -623,6 +739,7 @@ server.listen(PORT, HOST, () => {
   logWithTimestamp(`  💬 POST http://${HOST}:${PORT}/api/comment    - Comment on tweets`, 'UNIFIED');
   logWithTimestamp(`  🔄 POST http://${HOST}:${PORT}/api/retweet    - Retweet posts`, 'UNIFIED');
   logWithTimestamp(`  🔔 GET  http://${HOST}:${PORT}/api/notification - Check notifications`, 'UNIFIED');
+  logWithTimestamp(`  💭 POST http://${HOST}:${PORT}/api/notification/reply - Reply to notifications`, 'UNIFIED');
   logWithTimestamp(`  📊 GET  http://${HOST}:${PORT}/api/status     - Server status`, 'UNIFIED');
   logWithTimestamp(`  📖 GET  http://${HOST}:${PORT}/api/help       - API documentation`, 'UNIFIED');
   logWithTimestamp('='.repeat(80), 'UNIFIED');
