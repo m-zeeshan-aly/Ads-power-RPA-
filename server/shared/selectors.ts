@@ -75,7 +75,10 @@ export const TWITTER_SELECTORS = {
   TWEET_TEXT: [
     '[data-testid="tweetText"]',
     'div[data-testid="tweetText"]',
-    '[lang] span'
+    '[lang] span',
+    'div[lang]',
+    '[dir="ltr"] span',
+    'div[dir="ltr"]'
   ],
   
   // Profile elements

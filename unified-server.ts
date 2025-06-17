@@ -37,6 +37,12 @@ import {
   replyToNotificationSimple 
 } from './server/notification/simple-notification-reply';
 
+import { 
+  AccountTweetsInput, 
+  AccountTweetsResult,
+  getAccountTweets 
+} from './server/account-tweets/account-tweets-fetcher';
+
 // Load environment variables
 dotenv.config();
 
@@ -53,7 +59,8 @@ function logWithTimestamp(message: string, service: string = 'UNIFIED'): void {
                    service === 'COMMENT' ? '\x1b[35m' : 
                    service === 'RETWEET' ? '\x1b[34m' : 
                    service === 'NOTIFICATION' ? '\x1b[93m' : 
-                   service === 'REPLY' ? '\x1b[96m' : '\x1b[37m';
+                   service === 'REPLY' ? '\x1b[96m' : 
+                   service === 'ACCOUNT_TWEETS' ? '\x1b[92m' : '\x1b[37m';
   const resetCode = '\x1b[0m';
   console.log(`${colorCode}[${timestamp}] [${service}] ${message}${resetCode}`);
 }
@@ -227,6 +234,46 @@ function validateNotificationReplyInput(input: any): NotificationReplyInput {
     notificationContent: input.notificationContent,
     behaviorType: input.behaviorType
   } as NotificationReplyInput;
+}
+
+function validateAccountTweetsInput(input: any): AccountTweetsInput {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Request body must be a valid JSON object');
+  }
+
+  if (!input.username || typeof input.username !== 'string') {
+    throw new Error('username is required and must be a string');
+  }
+
+  // Clean username (remove @ if present)
+  const cleanUsername = input.username.replace('@', '').trim();
+  if (!/^[a-zA-Z0-9_]{1,15}$/.test(cleanUsername)) {
+    throw new Error('username must be a valid Twitter username (1-15 characters, alphanumeric and underscore only)');
+  }
+
+  // Validate optional parameters
+  if (input.count !== undefined) {
+    const count = Number(input.count);
+    if (isNaN(count) || count < 1 || count > 50) {
+      throw new Error('count must be a number between 1 and 50');
+    }
+    input.count = count;
+  }
+
+  if (input.includeReplies !== undefined) {
+    input.includeReplies = Boolean(input.includeReplies);
+  }
+
+  if (input.includeRetweets !== undefined) {
+    input.includeRetweets = Boolean(input.includeRetweets);
+  }
+
+  return {
+    username: cleanUsername,
+    count: input.count || 30,
+    includeReplies: input.includeReplies || false,
+    includeRetweets: input.includeRetweets !== false // Default to true
+  } as AccountTweetsInput;
 }
 
 // Service handlers
@@ -429,6 +476,35 @@ async function handleNotificationReplyRequest(input: NotificationReplyInput): Pr
   }
 }
 
+async function handleAccountTweetsRequest(input: AccountTweetsInput): Promise<any> {
+  logWithTimestamp(`Processing request for account tweets: ${input.username}`, 'ACCOUNT_TWEETS');
+
+  try {
+    const browser = await getBrowserConnection();
+    
+    const startTime = Date.now();
+    const tweets = await getAccountTweets(browser, input);
+    const duration = Date.now() - startTime;
+    
+    logWithTimestamp(`Account tweets fetched successfully in ${duration}ms`, 'ACCOUNT_TWEETS');
+    
+    return {
+      message: 'Account tweets fetched successfully',
+      input: {
+        username: input.username,
+        count: input.count || 30,
+        includeReplies: input.includeReplies || false,
+        includeRetweets: input.includeRetweets !== false
+      },
+      data: tweets,
+      duration: `${duration}ms`
+    };
+  } catch (error: any) {
+    logWithTimestamp(`Fetch account tweets failed: ${error.message}`, 'ACCOUNT_TWEETS');
+    throw new Error(`Fetch account tweets failed: ${error.message}`);
+  }
+}
+
 // Status handler
 async function handleStatus(): Promise<any> {
   const browser = await getBrowserConnection().catch(() => null);
@@ -459,6 +535,10 @@ async function handleStatus(): Promise<any> {
       notification: {
         endpoint: 'GET /api/notification',
         description: 'Check for unread notifications (comments and mentions only)'
+      },
+      account_tweets: {
+        endpoint: 'GET/POST /api/account-tweets',
+        description: 'Fetch recent tweets from a specific account'
       }
     }
   };
@@ -598,6 +678,40 @@ function handleHelp(): any {
         }
       },
       
+      'POST /api/account-tweets': {
+        description: 'Fetch recent tweets from a specific account',
+        body: {
+          username: 'string - Target username (e.g., "ImranKhanPTI")',
+          count: 'number (1-50, default: 30) - Number of tweets to fetch',
+          includeReplies: 'boolean (optional) - Whether to include replies',
+          includeRetweets: 'boolean (optional) - Whether to include retweets'
+        },
+        example: {
+          username: 'ImranKhanPTI',
+          count: 10,
+          includeReplies: true,
+          includeRetweets: false
+        }
+      },
+      
+      'GET /api/account-tweets': {
+        description: 'Fetch recent tweets from a specific account using query parameters',
+        parameters: {
+          username: 'string (required) - Target username (e.g., "ImranKhanPTI")',
+          count: 'number (1-50, default: 30) - Number of tweets to fetch',
+          includeReplies: 'boolean (default: false) - Whether to include replies',
+          includeRetweets: 'boolean (default: true) - Whether to include retweets'
+        },
+        example: '?username=ImranKhanPTI&count=30&includeReplies=false&includeRetweets=true',
+        response: {
+          success: 'boolean - Whether the operation was successful',
+          username: 'string - The target username',
+          tweets: 'TweetData[] - Array of tweet objects with detailed information',
+          totalFetched: 'number - Number of tweets successfully fetched',
+          processingTime: 'string - Time taken to fetch the tweets'
+        }
+      },
+      
       'GET /api/status': {
         description: 'Get server status and browser connection state'
       },
@@ -643,6 +757,14 @@ function handleHelp(): any {
       {
         description: 'Reply with custom behavior and search parameters',
         curl: `curl -X POST http://localhost:${PORT}/api/notification/reply -H "Content-Type: application/json" -d '{"username": "charlie_dev", "replyMessage": "Great question! Let me explain...", "maxNotificationsToCheck": 30, "behaviorType": "thoughtful_writer"}'`
+      },
+      {
+        description: 'Fetch recent tweets from a specific account (POST)',
+        curl: `curl -X POST http://localhost:${PORT}/api/account-tweets -H "Content-Type: application/json" -d '{"username": "ImranKhanPTI", "count": 10}'`
+      },
+      {
+        description: 'Fetch recent tweets from a specific account (GET)',
+        curl: `curl "http://localhost:${PORT}/api/account-tweets?username=ImranKhanPTI&count=30&includeReplies=false"`
       }
     ]
   };
@@ -701,6 +823,34 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const result = await handleNotificationReplyRequest(validatedInput);
       sendSuccess(res, result, 'REPLY');
       
+    } else if (pathname === '/api/account-tweets' && method === 'POST') {
+      const body = await parseBody(req);
+      const validatedInput = validateAccountTweetsInput(body);
+      const result = await handleAccountTweetsRequest(validatedInput);
+      sendSuccess(res, result, 'ACCOUNT_TWEETS');
+      
+    } else if (pathname === '/api/account-tweets' && method === 'GET') {
+      const parsedUrl = url.parse(req.url || '', true);
+      const query = parsedUrl.query;
+      
+      // Validate query parameters
+      if (!query.username) {
+        sendError(res, 400, 'Username parameter is required. Example: /api/account-tweets?username=ImranKhanPTI&count=30', 'ACCOUNT_TWEETS');
+        return;
+      }
+      
+      // Build input from query parameters
+      const queryInput = {
+        username: String(query.username),
+        count: query.count ? parseInt(String(query.count)) : undefined,
+        includeReplies: query.includeReplies === 'true',
+        includeRetweets: query.includeRetweets !== 'false'
+      };
+      
+      const validatedInput = validateAccountTweetsInput(queryInput);
+      const result = await handleAccountTweetsRequest(validatedInput);
+      sendSuccess(res, result, 'ACCOUNT_TWEETS');
+      
     } else if (pathname === '/api/status' && method === 'GET') {
       const status = await handleStatus();
       sendSuccess(res, status);
@@ -740,7 +890,8 @@ server.listen(PORT, HOST, () => {
   logWithTimestamp(`  🔄 POST http://${HOST}:${PORT}/api/retweet    - Retweet posts`, 'UNIFIED');
   logWithTimestamp(`  🔔 GET  http://${HOST}:${PORT}/api/notification - Check notifications`, 'UNIFIED');
   logWithTimestamp(`  💭 POST http://${HOST}:${PORT}/api/notification/reply - Reply to notifications`, 'UNIFIED');
-  logWithTimestamp(`  📊 GET  http://${HOST}:${PORT}/api/status     - Server status`, 'UNIFIED');
+  logWithTimestamp(`  📊 GET/POST http://${HOST}:${PORT}/api/account-tweets - Fetch account tweets`, 'UNIFIED');
+  logWithTimestamp(`  �📊 GET  http://${HOST}:${PORT}/api/status     - Server status`, 'UNIFIED');
   logWithTimestamp(`  📖 GET  http://${HOST}:${PORT}/api/help       - API documentation`, 'UNIFIED');
   logWithTimestamp('='.repeat(80), 'UNIFIED');
   logWithTimestamp('🌟 All services are unified on a single port with shared browser connection!', 'UNIFIED');
@@ -781,4 +932,4 @@ process.on('unhandledRejection', (reason, promise) => {
   process.exit(1);
 });
 
-export { server, handleTweetRequest, handleLikeRequest, handleCommentRequest, handleRetweetRequest, handleNotificationRequest };
+export { server, handleTweetRequest, handleLikeRequest, handleCommentRequest, handleRetweetRequest, handleNotificationRequest, handleAccountTweetsRequest };

@@ -237,6 +237,76 @@ async function testRetweetFunctionality(): Promise<void> {
   }
 }
 
+// Test account tweets fetching
+async function testAccountTweetsFunctionality(): Promise<void> {
+  log('📊 Testing account tweets fetching...', Colors.Blue);
+  
+  // Test 1: Fetch tweets using POST method
+  try {
+    log('   Testing POST /api/account-tweets...', Colors.Cyan);
+    const postData = {
+      username: 'elonmusk',
+      count: 5,
+      includeReplies: false,
+      includeRetweets: true
+    };
+    
+    const response = await makeRequest('POST', '/api/account-tweets', postData);
+    
+    if (response.statusCode === 200 && response.data.success) {
+      log('✅ Account tweets POST request successful', Colors.Green);
+      
+      const data = response.data.data;
+      log(`   Fetched ${data.totalFetched} tweets from @${data.username}`, Colors.White);
+      log(`   Processing time: ${data.processingTime}`, Colors.White);
+      
+      if (data.tweets && data.tweets.length > 0) {
+        const tweet = data.tweets[0];
+        log(`   Sample tweet: "${tweet.content.substring(0, 60)}..."`, Colors.White);
+        log(`   Tweet URL: ${tweet.url}`, Colors.White);
+        log(`   Engagement: ${tweet.likes} likes, ${tweet.retweets} retweets`, Colors.White);
+      }
+    } else {
+      log('❌ Account tweets POST request failed', Colors.Red);
+      log(`   Status: ${response.statusCode}, Error: ${response.data.error || 'Unknown'}`, Colors.Red);
+    }
+  } catch (error: any) {
+    log(`❌ Account tweets POST test error: ${error.message}`, Colors.Red);
+  }
+  
+  // Test 2: Fetch tweets using GET method
+  try {
+    log('   Testing GET /api/account-tweets...', Colors.Cyan);
+    const getResponse = await makeRequest('GET', '/api/account-tweets?username=ImranKhanPTI&count=3&includeReplies=false');
+    
+    if (getResponse.statusCode === 200 && getResponse.data.success) {
+      log('✅ Account tweets GET request successful', Colors.Green);
+      
+      const data = getResponse.data.data;
+      log(`   Fetched ${data.totalFetched} tweets from @${data.username}`, Colors.White);
+    } else {
+      log('❌ Account tweets GET request failed', Colors.Red);
+      log(`   Status: ${getResponse.statusCode}, Error: ${getResponse.data.error || 'Unknown'}`, Colors.Red);
+    }
+  } catch (error: any) {
+    log(`❌ Account tweets GET test error: ${error.message}`, Colors.Red);
+  }
+  
+  // Test 3: Error handling - missing username
+  try {
+    log('   Testing error handling (missing username)...', Colors.Cyan);
+    const errorResponse = await makeRequest('POST', '/api/account-tweets', { count: 5 });
+    
+    if (errorResponse.statusCode === 400 && !errorResponse.data.success) {
+      log('✅ Missing username correctly rejected', Colors.Green);
+    } else {
+      log('❌ Missing username test failed', Colors.Red);
+    }
+  } catch (error: any) {
+    log(`❌ Missing username test error: ${error.message}`, Colors.Red);
+  }
+}
+
 // Test error handling
 async function testErrorHandling(): Promise<void> {
   log('⚠️ Testing error handling...', Colors.Blue);
@@ -316,6 +386,9 @@ async function runAllTests(): Promise<void> {
   await wait(3000);
   
   await testRetweetFunctionality();
+  await wait(3000);
+  
+  await testAccountTweetsFunctionality();
   
   log('', Colors.White);
   log('='.repeat(80), Colors.Magenta);
