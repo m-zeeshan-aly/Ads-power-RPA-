@@ -11,11 +11,6 @@ import {
 } from './server/tweet/custom_tweet_human';
 
 import { 
-  LikeInput, 
-  likeGenericTweetHuman 
-} from './server/like/generic_like_human';
-
-import { 
   CommentInput, 
   commentOnPostsHuman 
 } from './server/comment/generic_comment_human';
@@ -43,6 +38,19 @@ import {
   getAccountTweets 
 } from './server/account-tweets/account-tweets-fetcher';
 
+// Import new like functionality
+import { 
+  getHomeFeedTweets, 
+  HomeFeedInput, 
+  HomeFeedResult 
+} from './server/like/home-feed-fetcher';
+import { 
+  performPostAction, 
+  performActionOnTweetInCurrentPage,
+  PostActionInput, 
+  PostActionResult 
+} from './server/like/post-action-handler';
+
 // Load environment variables
 dotenv.config();
 
@@ -63,6 +71,20 @@ function logWithTimestamp(message: string, service: string = 'UNIFIED'): void {
                    service === 'ACCOUNT_TWEETS' ? '\x1b[92m' : '\x1b[37m';
   const resetCode = '\x1b[0m';
   console.log(`${colorCode}[${timestamp}] [${service}] ${message}${resetCode}`);
+}
+
+// Validate and convert behavior type
+function validateBehaviorType(behaviorType?: string): BehaviorType | undefined {
+  if (!behaviorType) return undefined;
+  
+  const validTypes = Object.values(BehaviorType);
+  if (validTypes.includes(behaviorType as BehaviorType)) {
+    return behaviorType as BehaviorType;
+  }
+  
+  // Return default if invalid
+  logWithTimestamp(`Invalid behavior type '${behaviorType}', using default`, 'UNIFIED');
+  return BehaviorType.CASUAL_BROWSER;
 }
 
 // Response utility functions
@@ -122,18 +144,6 @@ function validateTweetInput(input: any): TweetInput {
   }
 
   return input as TweetInput;
-}
-
-function validateLikeInput(input: any): LikeInput {
-  if (!input.username && !input.searchQuery && !input.tweetContent && !input.profileUrl) {
-    throw new Error('At least one targeting parameter must be provided (username, searchQuery, tweetContent, or profileUrl)');
-  }
-
-  if (input.likeCount && (!Number.isInteger(input.likeCount) || input.likeCount < 1 || input.likeCount > 10)) {
-    throw new Error('likeCount must be an integer between 1 and 10');
-  }
-
-  return input as LikeInput;
 }
 
 function validateCommentInput(input: any): CommentInput {
@@ -308,36 +318,115 @@ async function handleTweetRequest(input: TweetInput): Promise<any> {
   }
 }
 
-async function handleLikeRequest(input: LikeInput): Promise<any> {
-  logWithTimestamp(`Processing like request for: ${JSON.stringify({
-    username: input.username,
-    searchQuery: input.searchQuery,
-    likeCount: input.likeCount || 1
-  })}`, 'LIKE');
-
+async function handleLikeRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
-    const browser = await getBrowserConnection();
+    const body = await parseBody(req);
     
-    const startTime = Date.now();
-    await likeGenericTweetHuman(browser, input);
-    const duration = Date.now() - startTime;
+    // Validate request method and determine action type
+    if (req.method === 'GET' || !body.action) {
+      // GET request or no action specified = fetch home feed
+      const behaviorType = validateBehaviorType(body.behaviorType);
+      const scrollTime = body.scrollTime ? Number(body.scrollTime) : 20000;
+      
+      if (scrollTime < 10000 || scrollTime > 60000) {
+        sendError(res, 400, 'Scroll time must be between 10000 and 60000 milliseconds');
+        return;
+      }
+      
+      const input: HomeFeedInput = {
+        behaviorType,
+        scrollTime
+      };
+      
+      logWithTimestamp('Fetching home timeline with human browsing behavior', 'LIKE');
+      
+      const browser = await getBrowserConnection();
+      const result: HomeFeedResult = await getHomeFeedTweets(browser, input);
+      
+      if (result.success) {
+        logWithTimestamp(`Successfully browsed home timeline and selected ${result.selectedCount} tweets`, 'LIKE');
+        sendSuccess(res, {
+          tweets: result.tweets,
+          selectedCount: result.selectedCount,
+          totalAvailable: result.totalAvailable,
+          processingTime: result.processingTime,
+          note: `Randomly selected ${result.selectedCount} tweets during human-like browsing`
+        });
+      } else {
+        sendError(res, 500, result.error || 'Failed to browse home timeline');
+      }
+      
+    } else {
+      // POST request with action = perform like/unlike action
+      if (!['like', 'unlike'].includes(body.action)) {
+        sendError(res, 400, 'Action must be either "like" or "unlike"');
+        return;
+      }
+      
+      const action = body.action as 'like' | 'unlike';
+      const behaviorType = validateBehaviorType(body.behaviorType);
+      
+      if (body.tweetData) {
+        // Full tweet data provided
+        const tweetData = body.tweetData;
+        
+        if (!tweetData.tweetId || !tweetData.url) {
+          sendError(res, 400, 'Tweet data must include tweetId and url');
+          return;
+        }
+        
+        const input: PostActionInput = {
+          tweetData,
+          action,
+          behaviorType
+        };
+        
+        logWithTimestamp(`${action} action on tweet ${tweetData.tweetId} by @${tweetData.authorHandle}`, 'LIKE');
+        
+        const browser = await getBrowserConnection();
+        const result: PostActionResult = await performPostAction(browser, input);
+        
+        if (result.success) {
+          logWithTimestamp(`Successfully ${action}d tweet ${result.tweetId}`, 'LIKE');
+          sendSuccess(res, result);
+        } else {
+          sendError(res, 500, result.error || `Failed to ${action} tweet`);
+        }
+        
+      } else if (body.tweetId) {
+        // Just tweet ID provided
+        const tweetId = body.tweetId as string;
+        
+        if (!tweetId.trim()) {
+          sendError(res, 400, 'Tweet ID cannot be empty');
+          return;
+        }
+        
+        logWithTimestamp(`${action} action on tweet ${tweetId} (find in current page)`, 'LIKE');
+        
+        const browser = await getBrowserConnection();
+        const result: PostActionResult = await performActionOnTweetInCurrentPage(
+          browser, 
+          tweetId, 
+          action, 
+          behaviorType
+        );
+        
+        if (result.success) {
+          logWithTimestamp(`Successfully ${action}d tweet ${result.tweetId}`, 'LIKE');
+          sendSuccess(res, result);
+        } else {
+          sendError(res, 500, result.error || `Failed to ${action} tweet`);
+        }
+        
+      } else {
+        sendError(res, 400, 'Either tweetData object or tweetId string must be provided for action requests');
+      }
+    }
     
-    logWithTimestamp(`Like operation completed successfully in ${duration}ms`, 'LIKE');
-    
-    return {
-      message: 'Like operation completed successfully',
-      input: {
-        username: input.username,
-        searchQuery: input.searchQuery,
-        tweetContent: input.tweetContent,
-        profileUrl: input.profileUrl,
-        likeCount: input.likeCount || 1
-      },
-      duration: `${duration}ms`
-    };
   } catch (error: any) {
-    logWithTimestamp(`Like operation failed: ${error.message}`, 'LIKE');
-    throw new Error(`Like operation failed: ${error.message}`);
+    logWithTimestamp(`Error in like request: ${error.message}`, 'LIKE');
+    sendError(res, 500, error.message);
   }
 }
 
@@ -569,21 +658,40 @@ function handleHelp(): any {
         }
       },
       
-      'POST /api/like': {
-        description: 'Like tweets based on search criteria with human-like behavior',
-        body: {
-          targeting: 'At least one required',
-          username: 'string - Target username (e.g., "ImranKhanPTI")',
-          searchQuery: 'string - Search terms (e.g., "Pakistan politics")',
-          tweetContent: 'string - Specific content to match',
-          profileUrl: 'string - Direct profile URL',
-          likeCount: 'number (1-10, default: 1) - Number of tweets to like',
-          scrollTime: 'number (1000-60000ms, default: 10000) - Scroll duration'
+      'GET /api/like': {
+        description: 'Browse home timeline and randomly select 1-3 tweets with human-like behavior',
+        parameters: {
+          scrollTime: 'number (10000-60000ms, default: 20000) - Time to spend browsing',
+          behaviorType: 'string - Human behavior pattern to use while browsing'
         },
-        example: {
-          username: 'ImranKhanPTI',
-          likeCount: 2,
-          scrollTime: 15000
+        example: '?scrollTime=25000&behaviorType=casual_browser',
+        response: {
+          tweets: 'array - Selected tweets from home timeline',
+          selectedCount: 'number - Number of tweets randomly selected (1-3)',
+          totalAvailable: 'number - Total tweets found during browsing',
+          processingTime: 'string - Time taken to browse and select'
+        }
+      },
+      
+      'POST /api/like': {
+        description: 'Perform like/unlike actions on specific tweets with human-like behavior',
+        body: {
+          action: 'string (required) - "like" or "unlike"',
+          tweetData: 'object (option 1) - Tweet data from GET /api/like',
+          tweetId: 'string (option 2) - Tweet ID to find in current page',
+          behaviorType: 'string (optional) - Human behavior pattern'
+        },
+        examples: {
+          withTweetData: {
+            action: 'like',
+            tweetData: 'object returned from GET /api/like',
+            behaviorType: 'social_engager'
+          },
+          withTweetId: {
+            action: 'unlike',
+            tweetId: '1234567890',
+            behaviorType: 'quick_poster'
+          }
         }
       },
       
@@ -796,11 +904,11 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       const result = await handleTweetRequest(validatedInput);
       sendSuccess(res, result, 'TWEET');
       
-    } else if (pathname === '/api/like' && method === 'POST') {
-      const body = await parseBody(req);
-      const validatedInput = validateLikeInput(body);
-      const result = await handleLikeRequest(validatedInput);
-      sendSuccess(res, result, 'LIKE');
+    } else if (pathname === '/api/like') {
+      await handleLikeRequest(req, res);
+      
+    } else if (pathname === '/api/like' && (method === 'GET' || method === 'POST')) {
+      await handleLikeRequest(req, res);
       
     } else if (pathname === '/api/comment' && method === 'POST') {
       const body = await parseBody(req);
