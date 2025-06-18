@@ -79,8 +79,8 @@ function validateInput(input: any): AccountTweetsInput {
   }
   
   const count = input.count || 30;
-  if (!Number.isInteger(count) || count < 1 || count > 50) {
-    throw new Error('Count must be an integer between 1 and 50');
+  if (!Number.isInteger(count) || count < 1) {
+    throw new Error('Count must be a positive integer (minimum 1)');
   }
   
   return {
@@ -127,7 +127,7 @@ async function handleGetTweets(req: http.IncomingMessage, res: http.ServerRespon
     
     const input: AccountTweetsInput = {
       username: String(query.username).replace(/^@/, ''),
-      count: query.count ? Math.min(Math.max(parseInt(String(query.count)), 1), 50) : 30,
+      count: query.count ? Math.max(parseInt(String(query.count)), 1) : 30,
       includeReplies: query.includeReplies === 'true',
       includeRetweets: query.includeRetweets !== 'false'
     };
@@ -172,7 +172,7 @@ function handleHelp(req: http.IncomingMessage, res: http.ServerResponse): void {
         contentType: 'application/json',
         body: {
           username: 'string (required) - Twitter username (with or without @)',
-          count: 'number (optional) - Number of tweets to fetch (1-50, default: 30)',
+          count: 'number (optional) - Number of tweets to fetch (minimum 1, default: 30)',
           includeReplies: 'boolean (optional) - Include reply tweets (default: false)',
           includeRetweets: 'boolean (optional) - Include retweets (default: true)'
         },
@@ -189,7 +189,7 @@ function handleHelp(req: http.IncomingMessage, res: http.ServerResponse): void {
         method: 'GET',
         parameters: {
           username: 'string (required) - Twitter username',
-          count: 'number (optional) - Number of tweets (1-50, default: 30)',
+          count: 'number (optional) - Number of tweets (minimum 1, default: 30)',
           includeReplies: 'boolean (optional) - Include replies (default: false)',
           includeRetweets: 'boolean (optional) - Include retweets (default: true)'
         },

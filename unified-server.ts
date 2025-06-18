@@ -251,13 +251,17 @@ function validateAccountTweetsInput(input: any): AccountTweetsInput {
     throw new Error('username must be a valid Twitter username (1-15 characters, alphanumeric and underscore only)');
   }
 
-  // Validate optional parameters
-  if (input.count !== undefined) {
-    const count = Number(input.count);
-    if (isNaN(count) || count < 1 || count > 50) {
-      throw new Error('count must be a number between 1 and 50');
+  // Validate optional parameters with sensible defaults and limits
+  let count = 30; // Default value
+  if (input.count !== undefined && input.count !== null) {
+    const parsedCount = Number(input.count);
+    if (isNaN(parsedCount) || parsedCount < 1) {
+      throw new Error('count must be a positive number (minimum 1)');
     }
-    input.count = count;
+    if (parsedCount > 200) {
+      throw new Error('count cannot exceed 200 tweets for performance and rate-limiting reasons');
+    }
+    count = parsedCount;
   }
 
   if (input.includeReplies !== undefined) {
@@ -270,7 +274,7 @@ function validateAccountTweetsInput(input: any): AccountTweetsInput {
 
   return {
     username: cleanUsername,
-    count: input.count || 30,
+    count: count,
     includeReplies: input.includeReplies || false,
     includeRetweets: input.includeRetweets !== false // Default to true
   } as AccountTweetsInput;
@@ -682,9 +686,9 @@ function handleHelp(): any {
         description: 'Fetch recent tweets from a specific account',
         body: {
           username: 'string - Target username (e.g., "ImranKhanPTI")',
-          count: 'number (1-50, default: 30) - Number of tweets to fetch',
-          includeReplies: 'boolean (optional) - Whether to include replies',
-          includeRetweets: 'boolean (optional) - Whether to include retweets'
+          count: 'number (optional, 1-200, default: 30) - Number of tweets to fetch',
+          includeReplies: 'boolean (optional, default: false) - Whether to include replies',
+          includeRetweets: 'boolean (optional, default: true) - Whether to include retweets'
         },
         example: {
           username: 'ImranKhanPTI',
@@ -698,9 +702,9 @@ function handleHelp(): any {
         description: 'Fetch recent tweets from a specific account using query parameters',
         parameters: {
           username: 'string (required) - Target username (e.g., "ImranKhanPTI")',
-          count: 'number (1-50, default: 30) - Number of tweets to fetch',
-          includeReplies: 'boolean (default: false) - Whether to include replies',
-          includeRetweets: 'boolean (default: true) - Whether to include retweets'
+          count: 'number (optional, 1-200, default: 30) - Number of tweets to fetch',
+          includeReplies: 'boolean (optional, default: false) - Whether to include replies',
+          includeRetweets: 'boolean (optional, default: true) - Whether to include retweets'
         },
         example: '?username=ImranKhanPTI&count=30&includeReplies=false&includeRetweets=true',
         response: {

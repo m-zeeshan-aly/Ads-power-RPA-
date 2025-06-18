@@ -23,13 +23,13 @@ async function testAccountTweets() {
     
     console.log('✅ Browser launched successfully');
     
-    // Test with a known account
+    // Test with a known account - testing the new unlimited count feature
     const testUsername = 'ImranKhanPTI';
     console.log(`\n📋 Testing with account: @${testUsername}`);
     
     const result = await getAccountTweets(browser, {
       username: testUsername,
-      count: 3,
+      count: 5, // Testing with a small number first
       includeReplies: false,
       includeRetweets: true
     });

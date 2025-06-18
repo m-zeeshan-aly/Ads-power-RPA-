@@ -24,9 +24,9 @@ export interface TweetData {
 
 export interface AccountTweetsInput {
   username: string;
-  count?: number; // Number of tweets to fetch (default 30, max 50)
-  includeReplies?: boolean; // Include replies (default false)
-  includeRetweets?: boolean; // Include retweets (default true)
+  count?: number; // Number of tweets to fetch (default: 30, max: 200)
+  includeReplies?: boolean; // Include replies (default: false)
+  includeRetweets?: boolean; // Include retweets (default: true)
 }
 
 export interface AccountTweetsResult {
@@ -43,7 +43,7 @@ export async function getAccountTweets(
   input: AccountTweetsInput
 ): Promise<AccountTweetsResult> {
   const { username, count = 30, includeReplies = false, includeRetweets = true } = input;
-  const maxTweets = Math.min(count, 50); // Limit to 50 tweets max
+  const maxTweets = count; // Use the requested count directly (no artificial limit)
   
   const pages = await browser.pages();
   const page = pages[0] || await browser.newPage();
@@ -202,7 +202,9 @@ export async function getAccountTweets(
     const tweets: TweetData[] = [];
     let lastTweetCount = 0;
     let scrollAttempts = 0;
-    const maxScrollAttempts = 20; // Increased for better coverage
+    // Dynamic max scroll attempts based on requested count
+    // For every 10 tweets requested, allow 2 scroll attempts (minimum 20, reasonable maximum)
+    const maxScrollAttempts = Math.max(20, Math.min(Math.ceil(maxTweets / 10) * 2, 100));
     let consecutiveFailures = 0;
     
     logWithTimestamp(`Starting to collect tweets (target: ${maxTweets})`, 'ACCOUNT_TWEETS');
