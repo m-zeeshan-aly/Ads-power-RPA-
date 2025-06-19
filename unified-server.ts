@@ -51,6 +51,19 @@ import {
   LikeActionResult 
 } from './server/like/like-action-handler';
 
+// Import new retweet-post functionality
+import { 
+  getHomeFeedTweets as getHomeFeedTweetsForRetweet, 
+  HomeFeedInput as RetweetHomeFeedInput, 
+  HomeFeedResult as RetweetHomeFeedResult 
+} from './server/retweet-post/home-feed-fetcher';
+import { 
+  performRetweetAction, 
+  performActionOnTweetInCurrentPage as performRetweetActionOnTweetInCurrentPage,
+  RetweetActionInput, 
+  RetweetActionResult 
+} from './server/retweet-post/retweet-action-handler';
+
 // Load environment variables
 dotenv.config();
 
@@ -494,6 +507,175 @@ async function handleLikeRequest(req: http.IncomingMessage, res: http.ServerResp
   }
 }
 
+// Handle retweet-post requests (similar to like but for retweeting)
+async function handleRetweetPostRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const method = req.method;
+  
+  try {
+    if (method === 'GET') {
+      // GET request: Browse home timeline and randomly select tweets for retweeting
+      const parsedUrl = url.parse(req.url || '', true);
+      const query = parsedUrl.query;
+      
+      const scrollTime = query.scrollTime ? parseInt(String(query.scrollTime)) : undefined;
+      const behaviorType = validateBehaviorType(String(query.behaviorType));
+      
+      logWithTimestamp('🏠 Browsing home timeline for retweet candidates...', 'RETWEET_POST');
+      
+      if (scrollTime && (scrollTime < 10000 || scrollTime > 60000)) {
+        sendError(res, 400, 'scrollTime must be between 10000 and 60000 milliseconds');
+        return;
+      }
+      
+      const browser = await getBrowserConnection();
+      const input: RetweetHomeFeedInput = {
+        scrollTime,
+        behaviorType
+      };
+      
+      const result: RetweetHomeFeedResult = await getHomeFeedTweetsForRetweet(browser, input);
+      
+      if (result.success) {
+        logWithTimestamp(`Found ${result.selectedCount} tweets for retweeting in ${result.processingTime}`, 'RETWEET_POST');
+        sendSuccess(res, result, 'RETWEET_POST');
+      } else {
+        logWithTimestamp(`Failed to browse home timeline for retweets: ${result.error}`, 'RETWEET_POST');
+        sendError(res, 500, result.error || 'Failed to browse home timeline');
+      }
+      
+    } else {
+      // POST request with action = perform retweet/unretweet action
+      const body = await parseBody(req);
+      
+      if (!['retweet', 'unretweet'].includes(body.action)) {
+        sendError(res, 400, 'Action must be either "retweet" or "unretweet"');
+        return;
+      }
+      
+      const action = body.action as 'retweet' | 'unretweet';
+      const behaviorType = validateBehaviorType(body.behaviorType);
+      
+      // 🔍 DEBUG: Log action processing details
+      logWithTimestamp('🎬 RETWEET ACTION PROCESSING DETAILS:', 'RETWEET_POST');
+      logWithTimestamp(`   🎭 Processed Action: ${action}`, 'RETWEET_POST');
+      logWithTimestamp(`   🎨 Processed Behavior: ${behaviorType}`, 'RETWEET_POST');
+      logWithTimestamp(`   📊 Has Tweet Data: ${!!body.tweetData}`, 'RETWEET_POST');
+      logWithTimestamp(`   🆔 Has Tweet ID: ${!!body.tweetId}`, 'RETWEET_POST');
+      logWithTimestamp(`   📝 Has Content: ${!!body.content}`, 'RETWEET_POST');
+      logWithTimestamp(`   🔗 Has URL: ${!!body.url}`, 'RETWEET_POST');
+      logWithTimestamp(`   👤 Has Author Handle: ${!!body.authorHandle}`, 'RETWEET_POST');
+      
+      // Check for flattened structure first (preferred)
+      if (body.tweetId && !body.tweetData) {
+        // Flattened structure provided - create input directly
+        const tweetId = body.tweetId as string;
+        
+        // 🔍 DEBUG: Log flattened structure details
+        logWithTimestamp('🔧 FLATTENED STRUCTURE PROVIDED:', 'RETWEET_POST');
+        logWithTimestamp(`   🎯 Tweet ID: "${tweetId}"`, 'RETWEET_POST');
+        logWithTimestamp(`   📝 Content: "${body.content || 'Not provided'}"`, 'RETWEET_POST');
+        logWithTimestamp(`   🔗 URL: "${body.url || 'Not provided'}"`, 'RETWEET_POST');
+        logWithTimestamp(`   👤 Author Handle: "${body.authorHandle || 'Not provided'}"`, 'RETWEET_POST');
+        
+        if (!tweetId.trim()) {
+          sendError(res, 400, 'Tweet ID cannot be empty');
+          return;
+        }
+        
+        const input: RetweetActionInput = {
+          tweetId: tweetId.trim(),
+          action,
+          behaviorType,
+          content: body.content,
+          url: body.url,
+          authorHandle: body.authorHandle
+        };
+        
+        // 🔍 DEBUG: Log final input being sent to action handler
+        logWithTimestamp('🚀 FINAL INPUT TO RETWEET ACTION HANDLER (FLATTENED):', 'RETWEET_POST');
+        logWithTimestamp(`   📤 Input: ${JSON.stringify(input, null, 2)}`, 'RETWEET_POST');
+        
+        logWithTimestamp(`${action} action on tweet ${tweetId} using flattened structure`, 'RETWEET_POST');
+        if (body.content) {
+          logWithTimestamp(`📝 Content provided: "${body.content.substring(0, 80)}${body.content.length > 80 ? '...' : ''}"`, 'RETWEET_POST');
+        }
+        
+        const browser = await getBrowserConnection();
+        const result: RetweetActionResult = await performRetweetAction(browser, input);
+        
+        if (result.success) {
+          logWithTimestamp(`Successfully ${action}d tweet ${result.tweetId} using method: ${result.method}`, 'RETWEET_POST');
+          sendSuccess(res, {
+            success: true,
+            action: result.action,
+            tweetId: result.tweetId,
+            tweetUrl: result.tweetUrl,
+            method: result.method,
+            processingTime: result.processingTime,
+            message: `Successfully ${action}d tweet via ${result.method}`
+          });
+        } else {
+          logWithTimestamp(`Failed to ${action} tweet ${tweetId}: ${result.error}`, 'RETWEET_POST');
+          sendError(res, 400, result.error || `Failed to ${action} tweet - tried all methods`);
+        }
+        
+      } else if (body.tweetData) {
+        // Legacy: Full tweet data provided (nested structure)
+        const tweetData = body.tweetData;
+        
+        // 🔍 DEBUG: Log tweet data details
+        logWithTimestamp('📊 LEGACY TWEET DATA PROVIDED:', 'RETWEET_POST');
+        logWithTimestamp(`   📄 Tweet Data: ${JSON.stringify(tweetData, null, 2)}`, 'RETWEET_POST');
+        
+        if (!tweetData.tweetId) {
+          sendError(res, 400, 'Tweet data must include tweetId');
+          return;
+        }
+        
+        const input: RetweetActionInput = {
+          tweetData,
+          action,
+          behaviorType,
+          content: body.content || tweetData.content
+        };
+        
+        // 🔍 DEBUG: Log final input being sent to action handler
+        logWithTimestamp('🚀 FINAL INPUT TO RETWEET ACTION HANDLER (LEGACY):', 'RETWEET_POST');
+        logWithTimestamp(`   📤 Input: ${JSON.stringify(input, null, 2)}`, 'RETWEET_POST');
+        
+        logWithTimestamp(`${action} action on tweet ${tweetData.tweetId} by @${tweetData.authorHandle || 'unknown'}`, 'RETWEET_POST');
+        logWithTimestamp(`📝 Content preview: "${(input.content || '').substring(0, 80)}${(input.content || '').length > 80 ? '...' : ''}"`, 'RETWEET_POST');
+        
+        const browser = await getBrowserConnection();
+        const result: RetweetActionResult = await performRetweetAction(browser, input);
+        
+        if (result.success) {
+          logWithTimestamp(`Successfully ${action}d tweet ${result.tweetId} using method: ${result.method}`, 'RETWEET_POST');
+          sendSuccess(res, {
+            success: true,
+            action: result.action,
+            tweetId: result.tweetId,
+            tweetUrl: result.tweetUrl,
+            method: result.method,
+            processingTime: result.processingTime,
+            message: `Successfully ${action}d tweet via ${result.method}`
+          });
+        } else {
+          logWithTimestamp(`Failed to ${action} tweet ${tweetData.tweetId}: ${result.error}`, 'RETWEET_POST');
+          sendError(res, 400, result.error || `Failed to ${action} tweet - tried all methods`);
+        }
+        
+      } else {
+        sendError(res, 400, 'Either tweetId (with optional content, url, authorHandle) or legacy tweetData object must be provided for action requests');
+      }
+    }
+    
+  } catch (error: any) {
+    logWithTimestamp(`Error in retweet-post request: ${error.message}`, 'RETWEET_POST');
+    sendError(res, 500, error.message);
+  }
+}
+
 async function handleCommentRequest(input: CommentInput): Promise<any> {
   logWithTimestamp(`Processing comment request for: ${JSON.stringify({
     username: input.username,
@@ -797,6 +979,82 @@ function handleHelp(): any {
         ]
       },
       
+      'GET /api/retweet-post': {
+        description: 'Browse home timeline and randomly select 1-3 tweets for retweeting with human-like behavior',
+        parameters: {
+          scrollTime: 'number (10000-60000ms, default: 20000) - Time to spend browsing',
+          behaviorType: 'string - Human behavior pattern to use while browsing'
+        },
+        example: '?scrollTime=25000&behaviorType=casual_browser',
+        response: {
+          tweets: 'array - Selected tweets from home timeline suitable for retweeting',
+          selectedCount: 'number - Number of tweets randomly selected (1-3)',
+          totalAvailable: 'number - Total tweets found during browsing',
+          processingTime: 'string - Time taken to browse and select'
+        }
+      },
+      
+      'POST /api/retweet-post': {
+        description: 'Perform retweet/unretweet actions using improved human-like flow with 3-step search strategy',
+        searchStrategy: [
+          '1. 🏠 Current Timeline - Scrolls down for a few seconds to find the post',
+          '2. 🎯 Direct Navigation - Navigates directly to tweet URL in browser address bar',
+          '3. 👤 User Profile - Searches username profile if not found in timeline'
+        ],
+        flow: [
+          '📱 First scroll down in current timeline for a few seconds',
+          '🔍 If found: Retweet → Take user to top of home timeline',
+          '🎯 If not found: Navigate directly to tweet URL in browser',
+          '🔍 If found: Retweet → Take user to top of home timeline',
+          '👤 If not found: Search user profile and scroll to find tweet',
+          '🔍 If found: Retweet → Take user to top of home timeline'
+        ],
+        body: {
+          action: 'string (required) - "retweet" or "unretweet"',
+          tweetId: 'string (required) - Tweet ID',
+          content: 'string (optional) - Tweet content for better finding',
+          url: 'string (optional) - Tweet URL',
+          authorHandle: 'string (optional) - Author username (without @)',
+          behaviorType: 'string (optional) - Human behavior pattern',
+          tweetData: 'object (legacy) - Use flat structure instead'
+        },
+        examples: {
+          flattenedStructure: {
+            action: 'retweet',
+            tweetId: '1886257050193191167',
+            content: 'AI is changing the world',
+            url: 'https://x.com/locofy_ai/status/1886257050193191167',
+            authorHandle: 'locofy_ai',
+            behaviorType: 'casual_browser'
+          },
+          minimalRequired: {
+            action: 'retweet',
+            tweetId: '1886257050193191167'
+          },
+          withContentOnly: {
+            action: 'unretweet',
+            tweetId: '1886257050193191167',
+            content: 'AI is changing the world',
+            behaviorType: 'social_engager'
+          },
+          legacyTweetData: {
+            action: 'retweet',
+            tweetData: 'object returned from GET /api/retweet-post (deprecated)',
+            behaviorType: 'social_engager'
+          }
+        },
+        improvements: [
+          '✅ Flattened structure - no nested tweetData object',
+          '✅ Human-like scrolling behavior in timeline first',
+          '✅ Direct browser navigation to tweet URLs (priority method)',
+          '✅ Searches username profile timeline if not found',
+          '✅ Takes user to home timeline top after retweeting',
+          '✅ Enhanced natural timing throughout process',
+          '✅ Handles retweet confirmation menus automatically',
+          '✅ Backward compatible with legacy tweetData structure'
+        ]
+      },
+      
       'POST /api/comment': {
         description: 'Comment on tweets with custom messages and human-like behavior',
         body: {
@@ -1012,6 +1270,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     } else if (pathname === '/api/like' && (method === 'GET' || method === 'POST')) {
       await handleLikeRequest(req, res);
       
+    } else if (pathname === '/api/retweet-post') {
+      await handleRetweetPostRequest(req, res);
+      
+    } else if (pathname === '/api/retweet-post' && (method === 'GET' || method === 'POST')) {
+      await handleRetweetPostRequest(req, res);
+      
     } else if (pathname === '/api/comment' && method === 'POST') {
       const body = await parseBody(req);
       const validatedInput = validateCommentInput(body);
@@ -1102,6 +1366,7 @@ server.listen(PORT, HOST, () => {
   logWithTimestamp(`  👍 POST http://${HOST}:${PORT}/api/like       - Like tweets`, 'UNIFIED');
   logWithTimestamp(`  💬 POST http://${HOST}:${PORT}/api/comment    - Comment on tweets`, 'UNIFIED');
   logWithTimestamp(`  🔄 POST http://${HOST}:${PORT}/api/retweet    - Retweet posts`, 'UNIFIED');
+  logWithTimestamp(`  🔄 POST http://${HOST}:${PORT}/api/retweet-post - Retweet posts with new flow`, 'UNIFIED');
   logWithTimestamp(`  🔔 GET  http://${HOST}:${PORT}/api/notification - Check notifications`, 'UNIFIED');
   logWithTimestamp(`  💭 POST http://${HOST}:${PORT}/api/notification/reply - Reply to notifications`, 'UNIFIED');
   logWithTimestamp(`  📊 GET/POST http://${HOST}:${PORT}/api/account-tweets - Fetch account tweets`, 'UNIFIED');

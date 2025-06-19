@@ -1,22 +1,24 @@
+// retweet-action-handler.ts - Handle retweet actions on tweets from home feed
+
 import * as puppeteer from 'puppeteer-core';
 import { logWithTimestamp, saveScreenshot } from '../shared/utilities';
 import { humanDelay, humanClick, humanHover, humanScroll } from '../shared/human-actions';
 import { BehaviorPattern, BehaviorType, getBehaviorOrDefault } from '../shared/human-behavior';
 import { HomeFeedTweetData } from './home-feed-fetcher';
 
-export interface LikeActionInput {
+export interface RetweetActionInput {
   tweetData?: HomeFeedTweetData; // The tweet data from GET request
   tweetId?: string; // Alternative: just tweet ID
-  action: 'like' | 'unlike'; // The decision made externally
+  action: 'retweet' | 'unretweet'; // The decision made externally
   behaviorType?: BehaviorType; // Human behavior pattern
   content?: string; // Tweet content for better searching
   url?: string; // Tweet URL for direct navigation
   authorHandle?: string; // Author handle for profile search
 }
 
-export interface LikeActionResult {
+export interface RetweetActionResult {
   success: boolean;
-  action: 'like' | 'unlike';
+  action: 'retweet' | 'unretweet';
   tweetId: string;
   tweetUrl?: string;
   method?: string; // Which method found the tweet
@@ -24,23 +26,23 @@ export interface LikeActionResult {
   processingTime?: string;
 }
 
-export async function performLikeAction(
+export async function performRetweetAction(
   browser: puppeteer.Browser, 
-  input: LikeActionInput
-): Promise<LikeActionResult> {
+  input: RetweetActionInput
+): Promise<RetweetActionResult> {
   const { tweetData, tweetId, action, behaviorType, content, url, authorHandle } = input;
   const startTime = Date.now();
   
   // 🔍 DEBUG: Log complete input data received from user
-  logWithTimestamp('📋 COMPLETE INPUT DATA RECEIVED:', 'LIKE_ACTION');
-  logWithTimestamp(`   🎯 Raw Input: ${JSON.stringify(input, null, 2)}`, 'LIKE_ACTION');
-  logWithTimestamp(`   🔧 Action: ${action}`, 'LIKE_ACTION');
-  logWithTimestamp(`   🎭 Behavior Type: ${behaviorType || 'default'}`, 'LIKE_ACTION');
-  logWithTimestamp(`   📄 Tweet Data: ${tweetData ? JSON.stringify(tweetData, null, 2) : 'Not provided'}`, 'LIKE_ACTION');
-  logWithTimestamp(`   🆔 Tweet ID: ${tweetId || 'Not provided'}`, 'LIKE_ACTION');
-  logWithTimestamp(`   📝 Content: ${content || 'Not provided'}`, 'LIKE_ACTION');
-  logWithTimestamp(`   🔗 URL: ${url || 'Not provided'}`, 'LIKE_ACTION');
-  logWithTimestamp(`   👤 Author Handle: ${authorHandle || 'Not provided'}`, 'LIKE_ACTION');
+  logWithTimestamp('📋 COMPLETE INPUT DATA RECEIVED:', 'RETWEET_ACTION');
+  logWithTimestamp(`   🎯 Raw Input: ${JSON.stringify(input, null, 2)}`, 'RETWEET_ACTION');
+  logWithTimestamp(`   🔧 Action: ${action}`, 'RETWEET_ACTION');
+  logWithTimestamp(`   🎭 Behavior Type: ${behaviorType || 'default'}`, 'RETWEET_ACTION');
+  logWithTimestamp(`   📄 Tweet Data: ${tweetData ? JSON.stringify(tweetData, null, 2) : 'Not provided'}`, 'RETWEET_ACTION');
+  logWithTimestamp(`   🆔 Tweet ID: ${tweetId || 'Not provided'}`, 'RETWEET_ACTION');
+  logWithTimestamp(`   📝 Content: ${content || 'Not provided'}`, 'RETWEET_ACTION');
+  logWithTimestamp(`   🔗 URL: ${url || 'Not provided'}`, 'RETWEET_ACTION');
+  logWithTimestamp(`   👤 Author Handle: ${authorHandle || 'Not provided'}`, 'RETWEET_ACTION');
   
   // Determine tweet details - prioritize flattened structure over nested
   const targetTweetId = tweetId || tweetData?.tweetId;
@@ -49,15 +51,15 @@ export async function performLikeAction(
   const targetAuthor = authorHandle || tweetData?.authorHandle || '';
   
   // 🔍 DEBUG: Log what we extracted and assigned
-  logWithTimestamp('🎯 EXTRACTED DATA ASSIGNMENTS:', 'LIKE_ACTION');
-  logWithTimestamp(`   📊 Target Tweet ID: "${targetTweetId}"`, 'LIKE_ACTION');
-  logWithTimestamp(`   📝 Target Content: "${targetContent}"`, 'LIKE_ACTION');
-  logWithTimestamp(`   🔗 Target URL: "${targetUrl}"`, 'LIKE_ACTION');
-  logWithTimestamp(`   👤 Target Author: "${targetAuthor}"`, 'LIKE_ACTION');
-  logWithTimestamp(`   🔄 Data Source: ${tweetId ? 'Flattened Structure' : 'Legacy tweetData'}`, 'LIKE_ACTION');
+  logWithTimestamp('🎯 EXTRACTED DATA ASSIGNMENTS:', 'RETWEET_ACTION');
+  logWithTimestamp(`   📊 Target Tweet ID: "${targetTweetId}"`, 'RETWEET_ACTION');
+  logWithTimestamp(`   📝 Target Content: "${targetContent}"`, 'RETWEET_ACTION');
+  logWithTimestamp(`   🔗 Target URL: "${targetUrl}"`, 'RETWEET_ACTION');
+  logWithTimestamp(`   👤 Target Author: "${targetAuthor}"`, 'RETWEET_ACTION');
+  logWithTimestamp(`   🔄 Data Source: ${tweetId ? 'Flattened Structure' : 'Legacy tweetData'}`, 'RETWEET_ACTION');
   
   if (!targetTweetId) {
-    logWithTimestamp('❌ ERROR: No tweet ID found in input data', 'LIKE_ACTION');
+    logWithTimestamp('❌ ERROR: No tweet ID found in input data', 'RETWEET_ACTION');
     return {
       success: false,
       action,
@@ -67,13 +69,13 @@ export async function performLikeAction(
     };
   }
   
-  logWithTimestamp(`🎯 Starting ${action} action on tweet ${targetTweetId}`, 'LIKE_ACTION');
-  logWithTimestamp(`📝 Content: "${targetContent.substring(0, 100)}${targetContent.length > 100 ? '...' : ''}"`, 'LIKE_ACTION');
+  logWithTimestamp(`🎯 Starting ${action} action on tweet ${targetTweetId}`, 'RETWEET_ACTION');
+  logWithTimestamp(`📝 Content: "${targetContent.substring(0, 100)}${targetContent.length > 100 ? '...' : ''}"`, 'RETWEET_ACTION');
   if (targetUrl) {
-    logWithTimestamp(`🔗 URL: ${targetUrl}`, 'LIKE_ACTION');
+    logWithTimestamp(`🔗 URL: ${targetUrl}`, 'RETWEET_ACTION');
   }
   if (targetAuthor) {
-    logWithTimestamp(`👤 Author: @${targetAuthor}`, 'LIKE_ACTION');
+    logWithTimestamp(`👤 Author: @${targetAuthor}`, 'RETWEET_ACTION');
   }
   
   const pages = await browser.pages();
@@ -82,13 +84,13 @@ export async function performLikeAction(
   
   try {
     // STEP 1: First try to scroll down for a few seconds and find the post in current timeline
-    logWithTimestamp('🏠 Step 1: Scrolling down in current timeline to find the post...', 'LIKE_ACTION');
+    logWithTimestamp('🏠 Step 1: Scrolling down in current timeline to find the post...', 'RETWEET_ACTION');
     const timelineResult = await findTweetInCurrentTimeline(page, targetTweetId, targetContent, targetAuthor, action, behavior);
     
     if (timelineResult.success) {
-      logWithTimestamp(`✅ SUCCESS! Found and ${action}d tweet in current timeline - STOPPING EXECUTION`, 'LIKE_ACTION');
+      logWithTimestamp(`✅ SUCCESS! Found and ${action}d tweet in current timeline - STOPPING EXECUTION`, 'RETWEET_ACTION');
       await navigateToHomeTop(page, behavior);
-      logWithTimestamp(`🛑 EXECUTION COMPLETE - Returning success response`, 'LIKE_ACTION');
+      logWithTimestamp(`🛑 EXECUTION COMPLETE - Returning success response`, 'RETWEET_ACTION');
       return {
         success: true,
         action,
@@ -99,24 +101,24 @@ export async function performLikeAction(
       };
     }
     
-    logWithTimestamp('❌ Step 1 failed: Tweet not found in current timeline - Moving to Step 2', 'LIKE_ACTION');
+    logWithTimestamp('❌ Step 1 failed: Tweet not found in current timeline - Moving to Step 2', 'RETWEET_ACTION');
 
     // STEP 2: Navigate directly to the tweet URL in browser address bar (PRIORITY METHOD)
     if (targetUrl && targetUrl.includes('x.com/') && targetUrl.includes('/status/')) {
-      logWithTimestamp('🎯 Step 2: Navigating DIRECTLY to tweet URL in BROWSER ADDRESS BAR (NOT Twitter search)...', 'LIKE_ACTION');
+      logWithTimestamp('🎯 Step 2: Navigating DIRECTLY to tweet URL in BROWSER ADDRESS BAR (NOT Twitter search)...', 'RETWEET_ACTION');
       
       // 🔍 DEBUG: Log direct navigation process
-      logWithTimestamp('🔍 DIRECT BROWSER NAVIGATION DEBUG:', 'LIKE_ACTION');
-      logWithTimestamp(`   🔗 Direct Target URL: "${targetUrl}"`, 'LIKE_ACTION');
-      logWithTimestamp(`   🎯 This will navigate DIRECTLY to the tweet page in browser address bar`, 'LIKE_ACTION');
-      logWithTimestamp(`   ⚠️  NOT searching in Twitter search bar - this is direct navigation`, 'LIKE_ACTION');
+      logWithTimestamp('🔍 DIRECT BROWSER NAVIGATION DEBUG:', 'RETWEET_ACTION');
+      logWithTimestamp(`   🔗 Direct Target URL: "${targetUrl}"`, 'RETWEET_ACTION');
+      logWithTimestamp(`   🎯 This will navigate DIRECTLY to the tweet page in browser address bar`, 'RETWEET_ACTION');
+      logWithTimestamp(`   ⚠️  NOT searching in Twitter search bar - this is direct navigation`, 'RETWEET_ACTION');
       
       const directNavigationResult = await navigateDirectlyToTweetUrl(page, targetTweetId, targetUrl, action, behavior);
       
       if (directNavigationResult.success) {
-        logWithTimestamp(`✅ SUCCESS! Found and ${action}d tweet via direct browser navigation - STOPPING EXECUTION`, 'LIKE_ACTION');
+        logWithTimestamp(`✅ SUCCESS! Found and ${action}d tweet via direct browser navigation - STOPPING EXECUTION`, 'RETWEET_ACTION');
         await navigateToHomeTop(page, behavior);
-        logWithTimestamp(`🛑 EXECUTION COMPLETE - Returning success response`, 'LIKE_ACTION');
+        logWithTimestamp(`🛑 EXECUTION COMPLETE - Returning success response`, 'RETWEET_ACTION');
         return {
           success: true,
           action,
@@ -127,9 +129,9 @@ export async function performLikeAction(
         };
       }
       
-      logWithTimestamp('❌ Step 2 failed: Direct browser navigation did not work - Moving to Step 3', 'LIKE_ACTION');
+      logWithTimestamp('❌ Step 2 failed: Direct browser navigation did not work - Moving to Step 3', 'RETWEET_ACTION');
     } else {
-      logWithTimestamp('⚠️ Step 2 skipped: No valid tweet URL provided for direct navigation - Moving to Step 3', 'LIKE_ACTION');
+      logWithTimestamp('⚠️ Step 2 skipped: No valid tweet URL provided for direct navigation - Moving to Step 3', 'RETWEET_ACTION');
     }
 
     // STEP 3: Search for the username and find the tweet on their profile
@@ -157,26 +159,26 @@ export async function performLikeAction(
                              /^[a-zA-Z0-9_]+$/.test(cleanedUsername);
       
       // 🔍 DEBUG: Log username extraction and validation process
-      logWithTimestamp('🔍 USERNAME EXTRACTION & VALIDATION DEBUG:', 'LIKE_ACTION');
-      logWithTimestamp(`   👤 Original Author: "${targetAuthor}"`, 'LIKE_ACTION');
-      logWithTimestamp(`   🔗 Original URL: "${targetUrl}"`, 'LIKE_ACTION');
-      logWithTimestamp(`   🧹 Cleaned Username: "${cleanedUsername}"`, 'LIKE_ACTION');
-      logWithTimestamp(`   ✅ Is Valid Username: ${isValidUsername}`, 'LIKE_ACTION');
+      logWithTimestamp('🔍 USERNAME EXTRACTION & VALIDATION DEBUG:', 'RETWEET_ACTION');
+      logWithTimestamp(`   👤 Original Author: "${targetAuthor}"`, 'RETWEET_ACTION');
+      logWithTimestamp(`   🔗 Original URL: "${targetUrl}"`, 'RETWEET_ACTION');
+      logWithTimestamp(`   🧹 Cleaned Username: "${cleanedUsername}"`, 'RETWEET_ACTION');
+      logWithTimestamp(`   ✅ Is Valid Username: ${isValidUsername}`, 'RETWEET_ACTION');
       
       if (isValidUsername) {
-        logWithTimestamp(`👤 Step 3: Searching user profile @${cleanedUsername} to find the tweet...`, 'LIKE_ACTION');
+        logWithTimestamp(`👤 Step 3: Searching user profile @${cleanedUsername} to find the tweet...`, 'RETWEET_ACTION');
         
         // 🔍 DEBUG: Log profile URL construction
         const profileUrl = `https://x.com/${cleanedUsername}`;
-        logWithTimestamp(`🏗️ PROFILE URL CONSTRUCTION:`, 'LIKE_ACTION');
-        logWithTimestamp(`   🎯 Profile URL: ${profileUrl}`, 'LIKE_ACTION');
+        logWithTimestamp(`🏗️ PROFILE URL CONSTRUCTION:`, 'RETWEET_ACTION');
+        logWithTimestamp(`   🎯 Profile URL: ${profileUrl}`, 'RETWEET_ACTION');
         
         const userProfileResult = await findTweetInUserProfile(page, targetTweetId, targetContent, cleanedUsername, targetUrl, action, behavior);
         
         if (userProfileResult.success) {
-          logWithTimestamp(`✅ SUCCESS! Found and ${action}d tweet in user profile - STOPPING EXECUTION`, 'LIKE_ACTION');
+          logWithTimestamp(`✅ SUCCESS! Found and ${action}d tweet in user profile - STOPPING EXECUTION`, 'RETWEET_ACTION');
           await navigateToHomeTop(page, behavior);
-          logWithTimestamp(`🛑 EXECUTION COMPLETE - Returning success response`, 'LIKE_ACTION');
+          logWithTimestamp(`🛑 EXECUTION COMPLETE - Returning success response`, 'RETWEET_ACTION');
           return {
             success: true,
             action,
@@ -187,18 +189,18 @@ export async function performLikeAction(
           };
         }
         
-        logWithTimestamp('❌ Step 3 failed: Tweet not found in user profile - No more methods available', 'LIKE_ACTION');
+        logWithTimestamp('❌ Step 3 failed: Tweet not found in user profile - No more methods available', 'RETWEET_ACTION');
       } else {
-        logWithTimestamp('⚠️ Step 3 skipped: Invalid username after cleaning - No more methods available', 'LIKE_ACTION');
-        logWithTimestamp(`   ❌ Username "${usernameToSearch}" → "${cleanedUsername}" is not valid for Twitter`, 'LIKE_ACTION');
+        logWithTimestamp('⚠️ Step 3 skipped: Invalid username after cleaning - No more methods available', 'RETWEET_ACTION');
+        logWithTimestamp(`   ❌ Username "${usernameToSearch}" → "${cleanedUsername}" is not valid for Twitter`, 'RETWEET_ACTION');
       }
     } else {
-      logWithTimestamp('⚠️ Step 3 skipped: No username available for profile search - No more methods available', 'LIKE_ACTION');
+      logWithTimestamp('⚠️ Step 3 skipped: No username available for profile search - No more methods available', 'RETWEET_ACTION');
     }
     
     // If we get here, all methods failed
-    logWithTimestamp('❌ ALL SEARCH METHODS EXHAUSTED - Tweet not found anywhere', 'LIKE_ACTION');
-    logWithTimestamp('🛑 EXECUTION COMPLETE - Returning failure response', 'LIKE_ACTION');
+    logWithTimestamp('❌ ALL SEARCH METHODS EXHAUSTED - Tweet not found anywhere', 'RETWEET_ACTION');
+    logWithTimestamp('🛑 EXECUTION COMPLETE - Returning failure response', 'RETWEET_ACTION');
     return {
       success: false,
       action,
@@ -209,15 +211,15 @@ export async function performLikeAction(
     };
     
   } catch (error: any) {
-    logWithTimestamp(`❌ Error performing ${action}: ${error.message}`, 'LIKE_ACTION');
+    logWithTimestamp(`❌ Error performing ${action}: ${error.message}`, 'RETWEET_ACTION');
     
     try {
-      await saveScreenshot(page, `${action}_error_${targetTweetId}.png`, 'LIKE_ACTION');
+      await saveScreenshot(page, `${action}_error_${targetTweetId}.png`, 'RETWEET_ACTION');
     } catch (screenshotError) {
-      logWithTimestamp('Could not save error screenshot', 'LIKE_ACTION');
+      logWithTimestamp('Could not save error screenshot', 'RETWEET_ACTION');
     }
     
-    logWithTimestamp('🛑 EXECUTION COMPLETE - Returning error response', 'LIKE_ACTION');
+    logWithTimestamp('🛑 EXECUTION COMPLETE - Returning error response', 'RETWEET_ACTION');
     return {
       success: false,
       action,
@@ -229,17 +231,17 @@ export async function performLikeAction(
   }
 }
 
-// FIXED: Helper function to navigate directly to tweet URL in browser address bar (NOT Twitter search)
+// Helper function to navigate directly to tweet URL in browser address bar (NOT Twitter search)
 async function navigateDirectlyToTweetUrl(
   page: puppeteer.Page,
   tweetId: string,
   tweetUrl: string,
-  action: 'like' | 'unlike',
+  action: 'retweet' | 'unretweet',
   behavior: BehaviorPattern
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    logWithTimestamp(`🎯 Navigating directly to tweet URL in BROWSER ADDRESS BAR: ${tweetUrl}`, 'LIKE_ACTION');
-    logWithTimestamp(`   ⚠️  This is NOT searching in Twitter - this is direct browser navigation`, 'LIKE_ACTION');
+    logWithTimestamp(`🎯 Navigating directly to tweet URL in BROWSER ADDRESS BAR: ${tweetUrl}`, 'RETWEET_ACTION');
+    logWithTimestamp(`   ⚠️  This is NOT searching in Twitter - this is direct browser navigation`, 'RETWEET_ACTION');
     
     // Navigate directly to the tweet URL in browser address bar (NOT Twitter search)
     await page.goto(tweetUrl, { waitUntil: 'networkidle2', timeout: 30000 });
@@ -247,7 +249,7 @@ async function navigateDirectlyToTweetUrl(
     
     // Wait for the tweet page to load
     await page.waitForSelector('[data-testid="primaryColumn"]', { timeout: 15000 });
-    await saveScreenshot(page, `direct_browser_navigation_${tweetId}.png`, 'LIKE_ACTION');
+    await saveScreenshot(page, `direct_browser_navigation_retweet_${tweetId}.png`, 'RETWEET_ACTION');
     
     // Check if we're on a valid tweet page
     const isValidTweetPage = await page.evaluate(() => {
@@ -258,25 +260,25 @@ async function navigateDirectlyToTweetUrl(
     });
     
     if (!isValidTweetPage) {
-      logWithTimestamp('❌ Direct browser navigation did not lead to a valid tweet page', 'LIKE_ACTION');
+      logWithTimestamp('❌ Direct browser navigation did not lead to a valid tweet page', 'RETWEET_ACTION');
       return { success: false, error: 'Direct browser navigation did not lead to a valid tweet page' };
     }
     
-    logWithTimestamp('✅ Successfully navigated to tweet page directly via browser', 'LIKE_ACTION');
+    logWithTimestamp('✅ Successfully navigated to tweet page directly via browser', 'RETWEET_ACTION');
     
-    // Perform the like action on the tweet
-    const likeResult = await performLikeActionOnTweet(page, tweetId, action, behavior);
+    // Perform the retweet action on the tweet
+    const retweetResult = await performRetweetActionOnTweet(page, tweetId, action, behavior);
     
-    if (likeResult.success) {
-      logWithTimestamp(`✅ Successfully ${action}d tweet via direct browser navigation!`, 'LIKE_ACTION');
+    if (retweetResult.success) {
+      logWithTimestamp(`✅ Successfully ${action}d tweet via direct browser navigation!`, 'RETWEET_ACTION');
       return { success: true };
     } else {
-      logWithTimestamp(`❌ Failed to ${action} tweet via direct browser navigation: ${likeResult.error}`, 'LIKE_ACTION');
-      return { success: false, error: likeResult.error };
+      logWithTimestamp(`❌ Failed to ${action} tweet via direct browser navigation: ${retweetResult.error}`, 'RETWEET_ACTION');
+      return { success: false, error: retweetResult.error };
     }
     
   } catch (error: any) {
-    logWithTimestamp(`❌ Direct browser navigation failed: ${error.message}`, 'LIKE_ACTION');
+    logWithTimestamp(`❌ Direct browser navigation failed: ${error.message}`, 'RETWEET_ACTION');
     return { success: false, error: `Direct browser navigation failed: ${error.message}` };
   }
 }
@@ -287,20 +289,20 @@ async function findTweetInCurrentTimeline(
   tweetId: string,
   content: string,
   author: string,
-  action: 'like' | 'unlike',
+  action: 'retweet' | 'unretweet',
   behavior: BehaviorPattern
 ): Promise<{ success: boolean; error?: string }> {
   try {
     // Make sure we're on the home timeline
     const currentUrl = await page.url();
     if (!currentUrl.includes('/home')) {
-      logWithTimestamp('🏠 Navigating to home timeline first...', 'LIKE_ACTION');
+      logWithTimestamp('🏠 Navigating to home timeline first...', 'RETWEET_ACTION');
       await page.goto('https://x.com/home', { waitUntil: 'networkidle2', timeout: 30000 });
       await humanDelay(behavior, { min: 2000, max: 4000 });
     }
     
     await page.waitForSelector('[data-testid="primaryColumn"]', { timeout: 10000 });
-    await saveScreenshot(page, `timeline_search_${tweetId}.png`, 'LIKE_ACTION');
+    await saveScreenshot(page, `timeline_search_retweet_${tweetId}.png`, 'RETWEET_ACTION');
     
     // Scroll down for a few seconds looking for the tweet (human-like behavior)
     let scrollAttempts = 0;
@@ -308,7 +310,7 @@ async function findTweetInCurrentTimeline(
     
     while (scrollAttempts < maxScrollAttempts) {
       scrollAttempts++;
-      logWithTimestamp(`🔍 Scroll attempt ${scrollAttempts}/${maxScrollAttempts} in timeline...`, 'LIKE_ACTION');
+      logWithTimestamp(`🔍 Scroll attempt ${scrollAttempts}/${maxScrollAttempts} in timeline...`, 'RETWEET_ACTION');
       
       // Enhanced tweet finding with multiple strategies
       const tweetFound = await page.evaluate((targetId, targetContent, targetAuthor) => {
@@ -376,18 +378,18 @@ async function findTweetInCurrentTimeline(
       }, tweetId, content, author);
       
       if (tweetFound.found) {
-        logWithTimestamp(`✅ Found tweet in timeline using ${tweetFound.method}`, 'LIKE_ACTION');
+        logWithTimestamp(`✅ Found tweet in timeline using ${tweetFound.method}`, 'RETWEET_ACTION');
         await humanDelay(behavior, { min: 1500, max: 3000 });
         
-        // Perform like action
-        const likeResult = await performLikeActionOnTweet(page, tweetId, action, behavior);
+        // Perform retweet action
+        const retweetResult = await performRetweetActionOnTweet(page, tweetId, action, behavior);
         
-        if (likeResult.success) {
-          logWithTimestamp(`✅ Successfully ${action}d tweet in timeline! - STOPPING HERE`, 'LIKE_ACTION');
+        if (retweetResult.success) {
+          logWithTimestamp(`✅ Successfully ${action}d tweet in timeline! - STOPPING HERE`, 'RETWEET_ACTION');
           return { success: true };
         } else {
-          logWithTimestamp(`❌ Failed to ${action} tweet in timeline: ${likeResult.error}`, 'LIKE_ACTION');
-          return { success: false, error: likeResult.error };
+          logWithTimestamp(`❌ Failed to ${action} tweet in timeline: ${retweetResult.error}`, 'RETWEET_ACTION');
+          return { success: false, error: retweetResult.error };
         }
       }
       
@@ -404,11 +406,11 @@ async function findTweetInCurrentTimeline(
       }
     }
     
-    logWithTimestamp('❌ Tweet not found in current timeline after scrolling', 'LIKE_ACTION');
+    logWithTimestamp('❌ Tweet not found in current timeline after scrolling', 'RETWEET_ACTION');
     return { success: false, error: 'Tweet not found in current timeline after scrolling' };
     
   } catch (error: any) {
-    logWithTimestamp(`❌ Timeline search failed: ${error.message}`, 'LIKE_ACTION');
+    logWithTimestamp(`❌ Timeline search failed: ${error.message}`, 'RETWEET_ACTION');
     return { success: false, error: error.message };
   }
 }
@@ -420,15 +422,15 @@ async function findTweetInUserProfile(
   content: string,
   username: string,
   tweetUrl: string,
-  action: 'like' | 'unlike',
+  action: 'retweet' | 'unretweet',
   behavior: BehaviorPattern
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    logWithTimestamp(`👤 Searching user profile: @${username}`, 'LIKE_ACTION');
+    logWithTimestamp(`👤 Searching user profile: @${username}`, 'RETWEET_ACTION');
     
     // Navigate to user profile
     const profileUrl = `https://x.com/${username}`;
-    logWithTimestamp(`🔗 NAVIGATING TO PROFILE: ${profileUrl}`, 'LIKE_ACTION');
+    logWithTimestamp(`🔗 NAVIGATING TO PROFILE: ${profileUrl}`, 'RETWEET_ACTION');
     
     await page.goto(profileUrl, { waitUntil: 'networkidle2', timeout: 30000 });
     await humanDelay(behavior, { min: 3000, max: 5000 });
@@ -447,20 +449,20 @@ async function findTweetInUserProfile(
     });
     
     if (!isValidProfile) {
-      logWithTimestamp(`❌ Invalid profile page for @${username} - likely doesn't exist or is suspended`, 'LIKE_ACTION');
+      logWithTimestamp(`❌ Invalid profile page for @${username} - likely doesn't exist or is suspended`, 'RETWEET_ACTION');
       return { success: false, error: `Profile @${username} is not accessible` };
     }
     
     // Wait for tweets to load
     await page.waitForSelector('[data-testid="primaryColumn"]', { timeout: 10000 });
-    await saveScreenshot(page, `user_profile_${username}_${tweetId}.png`, 'LIKE_ACTION');
+    await saveScreenshot(page, `user_profile_retweet_${username}_${tweetId}.png`, 'RETWEET_ACTION');
     
     let profileScrollAttempts = 0;
     const maxProfileScrollAttempts = 10; // More attempts since user may have many tweets
     
     while (profileScrollAttempts < maxProfileScrollAttempts) {
       profileScrollAttempts++;
-      logWithTimestamp(`🔍 Scrolling user timeline ${profileScrollAttempts}/${maxProfileScrollAttempts}...`, 'LIKE_ACTION');
+      logWithTimestamp(`🔍 Scrolling user timeline ${profileScrollAttempts}/${maxProfileScrollAttempts}...`, 'RETWEET_ACTION');
       
       const tweetFound = await page.evaluate((targetId, targetContent) => {
         const articles = document.querySelectorAll('article[data-testid="tweet"]');
@@ -496,17 +498,17 @@ async function findTweetInUserProfile(
       }, tweetId, content);
       
       if (tweetFound.found) {
-        logWithTimestamp(`✅ Found tweet in user profile using ${tweetFound.method}`, 'LIKE_ACTION');
+        logWithTimestamp(`✅ Found tweet in user profile using ${tweetFound.method}`, 'RETWEET_ACTION');
         await humanDelay(behavior, { min: 1500, max: 3000 });
         
-        const likeResult = await performLikeActionOnTweet(page, tweetId, action, behavior);
+        const retweetResult = await performRetweetActionOnTweet(page, tweetId, action, behavior);
         
-        if (likeResult.success) {
-          logWithTimestamp(`✅ Successfully ${action}d tweet in user profile! - STOPPING HERE`, 'LIKE_ACTION');
+        if (retweetResult.success) {
+          logWithTimestamp(`✅ Successfully ${action}d tweet in user profile! - STOPPING HERE`, 'RETWEET_ACTION');
           return { success: true };
         } else {
-          logWithTimestamp(`❌ Failed to ${action} tweet in user profile: ${likeResult.error}`, 'LIKE_ACTION');
-          return { success: false, error: likeResult.error };
+          logWithTimestamp(`❌ Failed to ${action} tweet in user profile: ${retweetResult.error}`, 'RETWEET_ACTION');
+          return { success: false, error: retweetResult.error };
         }
       }
       
@@ -517,83 +519,82 @@ async function findTweetInUserProfile(
       }
     }
     
-    logWithTimestamp('❌ Tweet not found in user profile timeline', 'LIKE_ACTION');
+    logWithTimestamp('❌ Tweet not found in user profile timeline', 'RETWEET_ACTION');
     return { success: false, error: 'Tweet not found in user profile timeline' };
     
   } catch (error: any) {
-    logWithTimestamp(`❌ User profile search failed: ${error.message}`, 'LIKE_ACTION');
+    logWithTimestamp(`❌ User profile search failed: ${error.message}`, 'RETWEET_ACTION');
     return { success: false, error: error.message };
   }
 }
 
-// Core function to perform like/unlike action on a tweet
-async function performLikeActionOnTweet(
+// Core function to perform retweet/unretweet action on a tweet
+async function performRetweetActionOnTweet(
   page: puppeteer.Page,
   tweetId: string,
-  action: 'like' | 'unlike',
+  action: 'retweet' | 'unretweet',
   behavior: BehaviorPattern
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    logWithTimestamp(`🎯 Attempting to ${action} tweet ${tweetId}`, 'LIKE_ACTION');
+    logWithTimestamp(`🎯 Attempting to ${action} tweet ${tweetId}`, 'RETWEET_ACTION');
     
-    // Multiple strategies to find like button
-    let likeButtonSelector = '';
+    // Multiple strategies to find retweet button
+    let retweetButtonSelector = '';
     let buttonFound = false;
     
     // Strategy 1: Direct tweet ID selector
-    const directSelector = `article[data-testid="tweet"]:has(a[href*="/status/${tweetId}"]) [data-testid="like"]`;
+    const directSelector = `article[data-testid="tweet"]:has(a[href*="/status/${tweetId}"]) [data-testid="retweet"]`;
     const directButton = await page.$(directSelector);
     
     if (directButton) {
-      likeButtonSelector = directSelector;
+      retweetButtonSelector = directSelector;
       buttonFound = true;
-      logWithTimestamp('🎯 Found like button using direct ID selector', 'LIKE_ACTION');
+      logWithTimestamp('🎯 Found retweet button using direct ID selector', 'RETWEET_ACTION');
     } else {
-      // Strategy 2: Find any visible like button (assuming we scrolled to the right tweet)
-      const anyLikeButton = await page.$('[data-testid="like"]');
-      if (anyLikeButton) {
-        likeButtonSelector = '[data-testid="like"]';
+      // Strategy 2: Find any visible retweet button (assuming we scrolled to the right tweet)
+      const anyRetweetButton = await page.$('[data-testid="retweet"]');
+      if (anyRetweetButton) {
+        retweetButtonSelector = '[data-testid="retweet"]';
         buttonFound = true;
-        logWithTimestamp('🎯 Found like button using general selector', 'LIKE_ACTION');
+        logWithTimestamp('🎯 Found retweet button using general selector', 'RETWEET_ACTION');
       }
     }
     
     if (!buttonFound) {
-      logWithTimestamp('❌ Like button not found', 'LIKE_ACTION');
-      return { success: false, error: 'Like button not found' };
+      logWithTimestamp('❌ Retweet button not found', 'RETWEET_ACTION');
+      return { success: false, error: 'Retweet button not found' };
     }
     
-    // Check current state of the like button
+    // Check current state of the retweet button
     const buttonState = await page.evaluate((selector, targetAction) => {
       const button = document.querySelector(selector) as HTMLElement;
       if (!button) return { found: false };
       
-      const isCurrentlyLiked = 
+      const isCurrentlyRetweeted = 
         button.getAttribute('aria-pressed') === 'true' ||
-        button.querySelector('[data-testid="unlike"]') !== null ||
-        button.querySelector('path[d*="M20.884"]') !== null ||
-        button.classList.contains('liked') ||
-        button.closest('article')?.querySelector('[data-testid="unlike"]') !== null;
+        button.querySelector('[data-testid="unretweet"]') !== null ||
+        button.classList.contains('retweeted') ||
+        button.closest('article')?.querySelector('[data-testid="unretweet"]') !== null;
       
-      const needsAction = (targetAction === 'like' && !isCurrentlyLiked) ||
-                         (targetAction === 'unlike' && isCurrentlyLiked);
+      const needsAction = (targetAction === 'retweet' && !isCurrentlyRetweeted) ||
+                         (targetAction === 'unretweet' && isCurrentlyRetweeted);
       
-      return { found: true, isCurrentlyLiked, needsAction };
-    }, likeButtonSelector, action);
+      return { found: true, isCurrentlyRetweeted, needsAction };
+    }, retweetButtonSelector, action);
     
     if (!buttonState.found) {
-      logWithTimestamp('❌ Button state could not be determined', 'LIKE_ACTION');
+      logWithTimestamp('❌ Button state could not be determined', 'RETWEET_ACTION');
       return { success: false, error: 'Button state could not be determined' };
     }
     
     if (!buttonState.needsAction) {
-      const currentState = buttonState.isCurrentlyLiked ? 'liked' : 'not liked';
-      logWithTimestamp(`✅ Tweet is already ${currentState}, no action needed - SUCCESS!`, 'LIKE_ACTION');
+      const currentState = buttonState.isCurrentlyRetweeted ? 'retweeted' : 'not retweeted';
+      logWithTimestamp(`✅ Tweet is already ${currentState}, no action needed - SUCCESS!`, 'RETWEET_ACTION');
       return { success: true }; // Still consider this a success
     }
     
     // Perform human-like interaction
-    logWithTimestamp(`👤 Performing ${action} interaction...`, 'LIKE_ACTION');
+    logWithTimestamp(`👤 Performing ${action} interaction...`, 'RETWEET_ACTION');
     
     // Scroll to button to ensure it's visible
     await page.evaluate((selector) => {
@@ -601,49 +602,74 @@ async function performLikeActionOnTweet(
       if (button) {
         button.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
-    }, likeButtonSelector);
+    }, retweetButtonSelector);
     
     await humanDelay(behavior, { min: 500, max: 1000 });
     
     // Human-like hover before clicking
-    await page.hover(likeButtonSelector);
+    await page.hover(retweetButtonSelector);
     await humanDelay(behavior, { min: 500, max: 1200 });
     
     // Perform the click
-    await humanClick(page, likeButtonSelector, behavior);
+    await humanClick(page, retweetButtonSelector, behavior);
     await humanDelay(behavior, { min: 1000, max: 2000 });
+    
+    // Handle retweet menu if it appears (for retweet action)
+    if (action === 'retweet') {
+      try {
+        // Wait for retweet menu to appear
+        await page.waitForSelector('[data-testid="retweetConfirm"], [role="menuitem"]:has-text("Retweet")', { timeout: 5000 });
+        
+        // Find and click the "Retweet" confirmation button
+        const confirmButton = await page.$('[data-testid="retweetConfirm"]') || 
+                             await page.$('[role="menuitem"]:has-text("Retweet")');
+        
+        if (confirmButton) {
+          await humanDelay(behavior, { min: 300, max: 800 });
+          await humanHover(page, '[data-testid="retweetConfirm"], [role="menuitem"]:has-text("Retweet")', behavior);
+          await humanClick(page, '[data-testid="retweetConfirm"], [role="menuitem"]:has-text("Retweet")', behavior);
+          logWithTimestamp('✅ Clicked retweet confirmation button', 'RETWEET_ACTION');
+        } else {
+          logWithTimestamp('⚠️ Retweet confirmation button not found, continuing...', 'RETWEET_ACTION');
+        }
+      } catch (error) {
+        logWithTimestamp('⚠️ No retweet menu appeared or timed out, continuing...', 'RETWEET_ACTION');
+      }
+    }
+    
+    // Wait for action to complete
+    await humanDelay(behavior, { min: 1500, max: 2500 });
     
     // Verify the action was successful
     const actionVerified = await page.evaluate((selector, expectedAction) => {
       const button = document.querySelector(selector) as HTMLElement;
       if (!button) return { success: false, reason: 'Button disappeared' };
       
-      const isNowLiked = 
+      const isNowRetweeted = 
         button.getAttribute('aria-pressed') === 'true' ||
-        button.querySelector('[data-testid="unlike"]') !== null ||
-        button.querySelector('path[d*="M20.884"]') !== null ||
-        button.classList.contains('liked') ||
-        button.closest('article')?.querySelector('[data-testid="unlike"]') !== null;
+        button.querySelector('[data-testid="unretweet"]') !== null ||
+        button.classList.contains('retweeted') ||
+        button.closest('article')?.querySelector('[data-testid="unretweet"]') !== null;
       
-      const actionSuccessful = (expectedAction === 'like' && isNowLiked) || 
-                              (expectedAction === 'unlike' && !isNowLiked);
+      const actionSuccessful = (expectedAction === 'retweet' && isNowRetweeted) || 
+                              (expectedAction === 'unretweet' && !isNowRetweeted);
       
       return { 
         success: actionSuccessful, 
-        currentState: isNowLiked ? 'liked' : 'not liked'
+        currentState: isNowRetweeted ? 'retweeted' : 'not retweeted'
       };
-    }, likeButtonSelector, action);
+    }, retweetButtonSelector, action);
     
     if (!actionVerified.success) {
-      logWithTimestamp(`❌ Action verification failed: ${actionVerified.reason || 'Unknown reason'}`, 'LIKE_ACTION');
+      logWithTimestamp(`❌ Action verification failed: ${actionVerified.reason || 'Unknown reason'}`, 'RETWEET_ACTION');
       return { success: false, error: `Action verification failed: ${actionVerified.reason || 'Unknown reason'}` };
     }
     
-    logWithTimestamp(`✅ ${action} action verified! State: ${actionVerified.currentState} - SUCCESS!`, 'LIKE_ACTION');
+    logWithTimestamp(`✅ ${action} action verified! State: ${actionVerified.currentState} - SUCCESS!`, 'RETWEET_ACTION');
     return { success: true };
     
   } catch (error: any) {
-    logWithTimestamp(`❌ Error in like action: ${error.message}`, 'LIKE_ACTION');
+    logWithTimestamp(`❌ Error in retweet action: ${error.message}`, 'RETWEET_ACTION');
     return { success: false, error: error.message };
   }
 }
@@ -653,10 +679,10 @@ async function navigateToHomeTop(
   page: puppeteer.Page,
   behavior: BehaviorPattern
 ): Promise<void> {
-  logWithTimestamp('⏱️ Waiting for a moment before navigating back...', 'LIKE_ACTION');
+  logWithTimestamp('⏱️ Waiting for a moment before navigating back...', 'RETWEET_ACTION');
   await humanDelay(behavior, { min: 1000, max: 2000 });
   
-  logWithTimestamp('🏠 Taking user to top of home timeline', 'LIKE_ACTION');
+  logWithTimestamp('🏠 Taking user to top of home timeline', 'RETWEET_ACTION');
   
   try {
     // Navigate to home timeline
@@ -667,22 +693,22 @@ async function navigateToHomeTop(
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
     await humanDelay(behavior, { min: 500, max: 1000 });
     
-    logWithTimestamp('✅ Successfully navigated to home timeline top', 'LIKE_ACTION');
+    logWithTimestamp('✅ Successfully navigated to home timeline top', 'RETWEET_ACTION');
   } catch (error) {
-    logWithTimestamp('⚠️ Could not navigate to home timeline, but like action was successful', 'LIKE_ACTION');
+    logWithTimestamp('⚠️ Could not navigate to home timeline, but retweet action was successful', 'RETWEET_ACTION');
   }
   
-  logWithTimestamp('🛑 Like action completed - execution finished', 'LIKE_ACTION');
+  logWithTimestamp('🛑 Retweet action completed - execution finished', 'RETWEET_ACTION');
 }
 
 // Legacy function for backward compatibility
 export async function performActionOnTweetInCurrentPage(
   browser: puppeteer.Browser,
   tweetId: string,
-  action: 'like' | 'unlike',
+  action: 'retweet' | 'unretweet',
   behaviorType?: BehaviorType
-): Promise<LikeActionResult> {
-  return performLikeAction(browser, {
+): Promise<RetweetActionResult> {
+  return performRetweetAction(browser, {
     tweetId,
     action,
     behaviorType
