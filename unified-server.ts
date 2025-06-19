@@ -45,11 +45,11 @@ import {
   HomeFeedResult 
 } from './server/like/home-feed-fetcher';
 import { 
-  performPostAction, 
+  performLikeAction, 
   performActionOnTweetInCurrentPage,
-  PostActionInput, 
-  PostActionResult 
-} from './server/like/post-action-handler';
+  LikeActionInput, 
+  LikeActionResult 
+} from './server/like/like-action-handler';
 
 // Load environment variables
 dotenv.config();
@@ -322,6 +322,13 @@ async function handleLikeRequest(req: http.IncomingMessage, res: http.ServerResp
   try {
     const body = await parseBody(req);
     
+    // 🔍 DEBUG: Log complete request data from user
+    logWithTimestamp('📋 COMPLETE USER REQUEST DATA:', 'LIKE');
+    logWithTimestamp(`   📤 Method: ${req.method}`, 'LIKE');
+    logWithTimestamp(`   📄 Body: ${JSON.stringify(body, null, 2)}`, 'LIKE');
+    logWithTimestamp(`   🎯 Action: ${body.action || 'Not specified'}`, 'LIKE');
+    logWithTimestamp(`   🎭 Behavior Type: ${body.behaviorType || 'default'}`, 'LIKE');
+    
     // Validate request method and determine action type
     if (req.method === 'GET' || !body.action) {
       // GET request or no action specified = fetch home feed
@@ -366,61 +373,118 @@ async function handleLikeRequest(req: http.IncomingMessage, res: http.ServerResp
       const action = body.action as 'like' | 'unlike';
       const behaviorType = validateBehaviorType(body.behaviorType);
       
-      if (body.tweetData) {
-        // Full tweet data provided
-        const tweetData = body.tweetData;
-        
-        if (!tweetData.tweetId || !tweetData.url) {
-          sendError(res, 400, 'Tweet data must include tweetId and url');
-          return;
-        }
-        
-        const input: PostActionInput = {
-          tweetData,
-          action,
-          behaviorType
-        };
-        
-        logWithTimestamp(`${action} action on tweet ${tweetData.tweetId} by @${tweetData.authorHandle}`, 'LIKE');
-        
-        const browser = await getBrowserConnection();
-        const result: PostActionResult = await performPostAction(browser, input);
-        
-        if (result.success) {
-          logWithTimestamp(`Successfully ${action}d tweet ${result.tweetId}`, 'LIKE');
-          sendSuccess(res, result);
-        } else {
-          sendError(res, 500, result.error || `Failed to ${action} tweet`);
-        }
-        
-      } else if (body.tweetId) {
-        // Just tweet ID provided
+      // 🔍 DEBUG: Log action processing details
+      logWithTimestamp('🎬 ACTION PROCESSING DETAILS:', 'LIKE');
+      logWithTimestamp(`   🎭 Processed Action: ${action}`, 'LIKE');
+      logWithTimestamp(`   🎨 Processed Behavior: ${behaviorType}`, 'LIKE');
+      logWithTimestamp(`   📊 Has Tweet Data: ${!!body.tweetData}`, 'LIKE');
+      logWithTimestamp(`   🆔 Has Tweet ID: ${!!body.tweetId}`, 'LIKE');
+      logWithTimestamp(`   📝 Has Content: ${!!body.content}`, 'LIKE');
+      logWithTimestamp(`   🔗 Has URL: ${!!body.url}`, 'LIKE');
+      logWithTimestamp(`   👤 Has Author Handle: ${!!body.authorHandle}`, 'LIKE');
+      
+      // Check for flattened structure first (preferred)
+      if (body.tweetId && !body.tweetData) {
+        // Flattened structure provided - create input directly
         const tweetId = body.tweetId as string;
+        
+        // 🔍 DEBUG: Log flattened structure details
+        logWithTimestamp('� FLATTENED STRUCTURE PROVIDED:', 'LIKE');
+        logWithTimestamp(`   � Tweet ID: "${tweetId}"`, 'LIKE');
+        logWithTimestamp(`   📝 Content: "${body.content || 'Not provided'}"`, 'LIKE');
+        logWithTimestamp(`   🔗 URL: "${body.url || 'Not provided'}"`, 'LIKE');
+        logWithTimestamp(`   👤 Author Handle: "${body.authorHandle || 'Not provided'}"`, 'LIKE');
         
         if (!tweetId.trim()) {
           sendError(res, 400, 'Tweet ID cannot be empty');
           return;
         }
         
-        logWithTimestamp(`${action} action on tweet ${tweetId} (find in current page)`, 'LIKE');
+        const input: LikeActionInput = {
+          tweetId: tweetId.trim(),
+          action,
+          behaviorType,
+          content: body.content,
+          url: body.url,
+          authorHandle: body.authorHandle
+        };
+        
+        // 🔍 DEBUG: Log final input being sent to action handler
+        logWithTimestamp('🚀 FINAL INPUT TO ACTION HANDLER (FLATTENED):', 'LIKE');
+        logWithTimestamp(`   📤 Input: ${JSON.stringify(input, null, 2)}`, 'LIKE');
+        
+        logWithTimestamp(`${action} action on tweet ${tweetId} using flattened structure`, 'LIKE');
+        if (body.content) {
+          logWithTimestamp(`📝 Content provided: "${body.content.substring(0, 80)}${body.content.length > 80 ? '...' : ''}"`, 'LIKE');
+        }
         
         const browser = await getBrowserConnection();
-        const result: PostActionResult = await performActionOnTweetInCurrentPage(
-          browser, 
-          tweetId, 
-          action, 
-          behaviorType
-        );
+        const result: LikeActionResult = await performLikeAction(browser, input);
         
         if (result.success) {
-          logWithTimestamp(`Successfully ${action}d tweet ${result.tweetId}`, 'LIKE');
-          sendSuccess(res, result);
+          logWithTimestamp(`Successfully ${action}d tweet ${result.tweetId} using method: ${result.method}`, 'LIKE');
+          sendSuccess(res, {
+            success: true,
+            action: result.action,
+            tweetId: result.tweetId,
+            tweetUrl: result.tweetUrl,
+            method: result.method,
+            processingTime: result.processingTime,
+            message: `Successfully ${action}d tweet via ${result.method}`
+          });
         } else {
-          sendError(res, 500, result.error || `Failed to ${action} tweet`);
+          logWithTimestamp(`Failed to ${action} tweet ${tweetId}: ${result.error}`, 'LIKE');
+          sendError(res, 400, result.error || `Failed to ${action} tweet - tried all methods`);
+        }
+        
+      } else if (body.tweetData) {
+        // Legacy: Full tweet data provided (nested structure)
+        const tweetData = body.tweetData;
+        
+        // 🔍 DEBUG: Log tweet data details
+        logWithTimestamp('📊 LEGACY TWEET DATA PROVIDED:', 'LIKE');
+        logWithTimestamp(`   � Tweet Data: ${JSON.stringify(tweetData, null, 2)}`, 'LIKE');
+        
+        if (!tweetData.tweetId) {
+          sendError(res, 400, 'Tweet data must include tweetId');
+          return;
+        }
+        
+        const input: LikeActionInput = {
+          tweetData,
+          action,
+          behaviorType,
+          content: body.content || tweetData.content
+        };
+        
+        // 🔍 DEBUG: Log final input being sent to action handler
+        logWithTimestamp('🚀 FINAL INPUT TO ACTION HANDLER (LEGACY):', 'LIKE');
+        logWithTimestamp(`   📤 Input: ${JSON.stringify(input, null, 2)}`, 'LIKE');
+        
+        logWithTimestamp(`${action} action on tweet ${tweetData.tweetId} by @${tweetData.authorHandle || 'unknown'}`, 'LIKE');
+        logWithTimestamp(`📝 Content preview: "${(input.content || '').substring(0, 80)}${(input.content || '').length > 80 ? '...' : ''}"`, 'LIKE');
+        
+        const browser = await getBrowserConnection();
+        const result: LikeActionResult = await performLikeAction(browser, input);
+        
+        if (result.success) {
+          logWithTimestamp(`Successfully ${action}d tweet ${result.tweetId} using method: ${result.method}`, 'LIKE');
+          sendSuccess(res, {
+            success: true,
+            action: result.action,
+            tweetId: result.tweetId,
+            tweetUrl: result.tweetUrl,
+            method: result.method,
+            processingTime: result.processingTime,
+            message: `Successfully ${action}d tweet via ${result.method}`
+          });
+        } else {
+          logWithTimestamp(`Failed to ${action} tweet ${tweetData.tweetId}: ${result.error}`, 'LIKE');
+          sendError(res, 400, result.error || `Failed to ${action} tweet - tried all methods`);
         }
         
       } else {
-        sendError(res, 400, 'Either tweetData object or tweetId string must be provided for action requests');
+        sendError(res, 400, 'Either tweetId (with optional content, url, authorHandle) or legacy tweetData object must be provided for action requests');
       }
     }
     
@@ -674,25 +738,63 @@ function handleHelp(): any {
       },
       
       'POST /api/like': {
-        description: 'Perform like/unlike actions on specific tweets with human-like behavior',
+        description: 'Perform like/unlike actions using improved human-like flow with 3-step search strategy',
+        searchStrategy: [
+          '1. 🏠 Current Timeline - Scrolls down for a few seconds to find the post',
+          '2. 👤 User Profile - Searches username profile if not found in timeline',
+          '3. 🔗 Complete URL Search - Searches by complete tweet URL (with username)'
+        ],
+        flow: [
+          '📱 First scroll down in current timeline for a few seconds',
+          '🔍 If found: Like → Take user to top of home timeline',
+          '👤 If not found: Search user profile and scroll to find tweet',
+          '🔍 If found: Like → Take user to top of home timeline',
+          '🔗 If not found: Search by complete URL (with proper username)',
+          '🔍 If found: Like → Take user to top of home timeline'
+        ],
         body: {
           action: 'string (required) - "like" or "unlike"',
-          tweetData: 'object (option 1) - Tweet data from GET /api/like',
-          tweetId: 'string (option 2) - Tweet ID to find in current page',
-          behaviorType: 'string (optional) - Human behavior pattern'
+          tweetId: 'string (required) - Tweet ID',
+          content: 'string (optional) - Tweet content for better finding',
+          url: 'string (optional) - Tweet URL',
+          authorHandle: 'string (optional) - Author username (without @)',
+          behaviorType: 'string (optional) - Human behavior pattern',
+          tweetData: 'object (legacy) - Use flat structure instead'
         },
         examples: {
-          withTweetData: {
+          flattenedStructure: {
             action: 'like',
-            tweetData: 'object returned from GET /api/like',
+            tweetId: '1886257050193191167',
+            content: 'AI is changing the world',
+            url: 'https://x.com/locofy_ai/status/1886257050193191167/analytics',
+            authorHandle: 'locofy_ai',
+            behaviorType: 'casual_browser'
+          },
+          minimalRequired: {
+            action: 'like',
+            tweetId: '1886257050193191167'
+          },
+          withContentOnly: {
+            action: 'unlike',
+            tweetId: '1886257050193191167',
+            content: 'AI is changing the world',
             behaviorType: 'social_engager'
           },
-          withTweetId: {
-            action: 'unlike',
-            tweetId: '1234567890',
-            behaviorType: 'quick_poster'
+          legacyTweetData: {
+            action: 'like',
+            tweetData: 'object returned from GET /api/like (deprecated)',
+            behaviorType: 'social_engager'
           }
-        }
+        },
+        improvements: [
+          '✅ Flattened structure - no nested tweetData object',
+          '✅ Human-like scrolling behavior in timeline first',
+          '✅ Searches username profile timeline if not found',
+          '✅ Uses complete URLs with proper username inclusion',
+          '✅ Takes user to home timeline top after liking',
+          '✅ Enhanced natural timing throughout process',
+          '✅ Backward compatible with legacy tweetData structure'
+        ]
       },
       
       'POST /api/comment': {

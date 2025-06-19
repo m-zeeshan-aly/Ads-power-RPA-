@@ -45,9 +45,44 @@ curl -X GET "http://localhost:3000/api/like?scrollTime=15000&behaviorType=quick_
 }
 ```
 
-## 2. POST Like Action (Perform Like/Unlike)
+## 2. POST Like Action (Improved Human-Like Behavior)
 
-### Option A: Using tweet data from GET request
+### Smart Like Process:
+1. **First tries to find post in home timeline** (human-like scrolling)
+2. **If not found, searches for the post** using author and content
+3. **If still not found, uses direct URL** as last resort
+4. **Likes the post when found**
+5. **Waits 1 second, then scrolls back to top** (as requested)
+
+### ⭐ NEW: Flattened Structure (Recommended)
+
+All fields are now at the top level for easier integration:
+
+```bash
+curl -X POST http://localhost:3000/api/like \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "like",
+    "tweetId": "1886257050193191167",
+    "content": "AI is changing the world",
+    "url": "https://x.com/locofy_ai/status/1886257050193191167/analytics",
+    "authorHandle": "locofy_ai",
+    "behaviorType": "casual_browser"
+  }'
+```
+
+### Minimal Required Structure:
+
+```bash
+curl -X POST http://localhost:3000/api/like \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "like",
+    "tweetId": "1886257050193191167"
+  }'
+```
+
+### Legacy Option A: Using tweet data from GET request (Deprecated)
 
 ```bash
 curl -X POST http://localhost:3000/api/like \
@@ -65,7 +100,7 @@ curl -X POST http://localhost:3000/api/like \
   }'
 ```
 
-### Option B: Using just tweet ID
+### Legacy Option B: Using just tweet ID (Old Format)
 
 ```bash
 curl -X POST http://localhost:3000/api/like \
@@ -115,17 +150,30 @@ curl -X POST http://localhost:3000/api/like \
 - `scrollTime` (optional): 10000-60000ms, default: 20000
 - `behaviorType` (optional): Human behavior pattern
 
-### POST /api/like  
+### POST /api/like (Flattened Structure - Recommended)
 - `action` (required): "like" or "unlike"
-- `tweetData` (option 1): Tweet object from GET request
-- `tweetId` (option 2): Tweet ID string
+- `tweetId` (required): Tweet ID string
+- `content` (optional): Tweet content for better finding
+- `url` (optional): Tweet URL
+- `authorHandle` (optional): Author username (without @)
+- `behaviorType` (optional): Human behavior pattern
+
+### POST /api/like (Legacy Structure - Deprecated)
+- `action` (required): "like" or "unlike"
+- `tweetData` (deprecated): Tweet object from GET request
 - `behaviorType` (optional): Human behavior pattern
 
 ## Key Features
 
+⭐ **NEW: Flattened structure** - No nested objects, all fields at top level
+✅ **Backward compatible** - Legacy tweetData structure still supported
 ✅ **Randomly selects 1-3 tweets** each time GET is called
 ✅ **Human-like browsing behavior** while scrolling
 ✅ **Selects tweets during scrolling** (not after)
 ✅ **Integrated into unified server** (no separate port)
 ✅ **External decision making** - GET fetches data, POST performs actions
 ✅ **Natural timing and pauses** throughout the process
+✅ **Smart like process**: Tries home timeline → search → direct URL
+✅ **Human-like post finding**: Scrolls naturally to locate posts
+✅ **Auto scroll to top**: After liking, waits 1 second and scrolls back to top
+✅ **Flexible input**: Works with minimal data (just tweetId) or full context
