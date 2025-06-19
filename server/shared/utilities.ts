@@ -496,7 +496,7 @@ export function enhancedPostMatch(
       const exactScore = exactMatches / queryTerms.length;
       if (exactScore >= 0.7 && significantMatches > 0) { // Increased to 70% for more exactness
         result.isMatch = true;
-        result.score = 1.0; // True exact match gets perfect score
+        result.score = 1.0;
         result.matchedCriteria.push(`searchQuery: ${criteria.searchQuery}`);
         hasExactMatch = true;
         return result;
