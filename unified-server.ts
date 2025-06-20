@@ -64,6 +64,19 @@ import {
   RetweetActionResult 
 } from './server/retweet-post/retweet-action-handler';
 
+// Import new comment-tweet functionality
+import { 
+  getCommentFeedTweets, 
+  CommentFeedInput, 
+  CommentFeedResult 
+} from './server/comment-tweet/home-feed-fetcher';
+import { 
+  performCommentAction, 
+  performCommentActionOnTweetInCurrentPage,
+  CommentActionInput, 
+  CommentActionResult 
+} from './server/comment-tweet/comment-action-handler';
+
 // Load environment variables
 dotenv.config();
 
@@ -81,7 +94,8 @@ function logWithTimestamp(message: string, service: string = 'UNIFIED'): void {
                    service === 'RETWEET' ? '\x1b[34m' : 
                    service === 'NOTIFICATION' ? '\x1b[93m' : 
                    service === 'REPLY' ? '\x1b[96m' : 
-                   service === 'ACCOUNT_TWEETS' ? '\x1b[92m' : '\x1b[37m';
+                   service === 'ACCOUNT_TWEETS' ? '\x1b[92m' : 
+                   service === 'COMMENT_TWEET' ? '\x1b[95m' : '\x1b[37m';
   const resetCode = '\x1b[0m';
   console.log(`${colorCode}[${timestamp}] [${service}] ${message}${resetCode}`);
 }
@@ -844,6 +858,188 @@ async function handleAccountTweetsRequest(input: AccountTweetsInput): Promise<an
   }
 }
 
+// Handle comment-tweet requests (browsing and commenting on home feed tweets)
+async function handleCommentTweetRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const method = req.method;
+  
+  try {
+    if (method === 'GET') {
+      // GET request: Browse home timeline and select tweets for commenting (5-10 tweets minimum)
+      const parsedUrl = url.parse(req.url || '', true);
+      const query = parsedUrl.query;
+      
+      const scrollTime = query.scrollTime ? parseInt(String(query.scrollTime)) : undefined;
+      const behaviorType = validateBehaviorType(String(query.behaviorType));
+      
+      logWithTimestamp('🏠 Browsing home timeline for comment candidates...', 'COMMENT_TWEET');
+      
+      if (scrollTime && (scrollTime < 10000 || scrollTime > 60000)) {
+        sendError(res, 400, 'scrollTime must be between 10000 and 60000 milliseconds');
+        return;
+      }
+      
+      const browser = await getBrowserConnection();
+      const input: CommentFeedInput = {
+        scrollTime,
+        behaviorType
+      };
+      
+      const result: CommentFeedResult = await getCommentFeedTweets(browser, input);
+      
+      if (result.success) {
+        logWithTimestamp(`Found ${result.selectedCount} uncommented tweets for commenting in ${result.processingTime}`, 'COMMENT_TWEET');
+        sendSuccess(res, {
+          tweets: result.tweets,
+          selectedCount: result.selectedCount,
+          totalAvailable: result.totalAvailable,
+          processingTime: result.processingTime,
+          note: `Randomly selected ${result.selectedCount} uncommented tweets (5-10 range) during human-like browsing. All tweets have complete data and have not been commented on.`
+        }, 'COMMENT_TWEET');
+      } else {
+        logWithTimestamp(`Failed to browse home timeline for comments: ${result.error}`, 'COMMENT_TWEET');
+        sendError(res, 500, result.error || 'Failed to browse home timeline');
+      }
+      
+    } else {
+      // POST request: perform comment action
+      const body = await parseBody(req);
+      
+      if (!body.comment || typeof body.comment !== 'string' || body.comment.trim() === '') {
+        sendError(res, 400, 'comment is required and must be a non-empty string');
+        return;
+      }
+      
+      if (body.comment.length > 280) {
+        sendError(res, 400, 'comment cannot exceed 280 characters');
+        return;
+      }
+      
+      const comment = body.comment.trim();
+      const behaviorType = validateBehaviorType(body.behaviorType);
+      
+      // 🔍 DEBUG: Log action processing details
+      logWithTimestamp('🎬 COMMENT ACTION PROCESSING DETAILS:', 'COMMENT_TWEET');
+      logWithTimestamp(`   💬 Comment: "${comment}"`, 'COMMENT_TWEET');
+      logWithTimestamp(`   🎨 Processed Behavior: ${behaviorType}`, 'COMMENT_TWEET');
+      logWithTimestamp(`   📊 Has Tweet Data: ${!!body.tweetData}`, 'COMMENT_TWEET');
+      logWithTimestamp(`   🆔 Has Tweet ID: ${!!body.tweetId}`, 'COMMENT_TWEET');
+      logWithTimestamp(`   📝 Has Content: ${!!body.content}`, 'COMMENT_TWEET');
+      logWithTimestamp(`   🔗 Has URL: ${!!body.url}`, 'COMMENT_TWEET');
+      logWithTimestamp(`   👤 Has Author Handle: ${!!body.authorHandle}`, 'COMMENT_TWEET');
+      
+      // Check for flattened structure first (preferred)
+      if (body.tweetId && !body.tweetData) {
+        // Flattened structure provided - create input directly
+        const tweetId = body.tweetId as string;
+        
+        // 🔍 DEBUG: Log flattened structure details
+        logWithTimestamp('🔧 FLATTENED STRUCTURE PROVIDED:', 'COMMENT_TWEET');
+        logWithTimestamp(`   🎯 Tweet ID: "${tweetId}"`, 'COMMENT_TWEET');
+        logWithTimestamp(`   📝 Content: "${body.content || 'Not provided'}"`, 'COMMENT_TWEET');
+        logWithTimestamp(`   🔗 URL: "${body.url || 'Not provided'}"`, 'COMMENT_TWEET');
+        logWithTimestamp(`   👤 Author Handle: "${body.authorHandle || 'Not provided'}"`, 'COMMENT_TWEET');
+        
+        if (!tweetId.trim()) {
+          sendError(res, 400, 'Tweet ID cannot be empty');
+          return;
+        }
+        
+        const input: CommentActionInput = {
+          tweetId: tweetId.trim(),
+          comment,
+          behaviorType,
+          content: body.content,
+          url: body.url,
+          authorHandle: body.authorHandle
+        };
+        
+        // 🔍 DEBUG: Log final input being sent to action handler
+        logWithTimestamp('🚀 FINAL INPUT TO COMMENT ACTION HANDLER (FLATTENED):', 'COMMENT_TWEET');
+        logWithTimestamp(`   📤 Input: ${JSON.stringify(input, null, 2)}`, 'COMMENT_TWEET');
+        
+        logWithTimestamp(`Comment action on tweet ${tweetId} using flattened structure`, 'COMMENT_TWEET');
+        if (body.content) {
+          logWithTimestamp(`📝 Content provided: "${body.content.substring(0, 80)}${body.content.length > 80 ? '...' : ''}"`, 'COMMENT_TWEET');
+        }
+        
+        const browser = await getBrowserConnection();
+        const result: CommentActionResult = await performCommentAction(browser, input);
+        
+        if (result.success) {
+          logWithTimestamp(`Successfully commented on tweet ${result.tweetId} using method: ${result.method}`, 'COMMENT_TWEET');
+          sendSuccess(res, {
+            success: true,
+            action: result.action,
+            tweetId: result.tweetId,
+            tweetUrl: result.tweetUrl,
+            comment: result.comment,
+            method: result.method,
+            processingTime: result.processingTime,
+            message: `Successfully commented on tweet via ${result.method}`
+          }, 'COMMENT_TWEET');
+        } else {
+          logWithTimestamp(`Failed to comment on tweet ${tweetId}: ${result.error}`, 'COMMENT_TWEET');
+          sendError(res, 400, result.error || 'Failed to comment on tweet - tried all methods');
+        }
+        
+      } else if (body.tweetData) {
+        // Legacy: Full tweet data provided (nested structure)
+        const tweetData = body.tweetData;
+        
+        // 🔍 DEBUG: Log tweet data details
+        logWithTimestamp('📊 LEGACY TWEET DATA PROVIDED:', 'COMMENT_TWEET');
+        logWithTimestamp(`   📊 Tweet Data: ${JSON.stringify(tweetData, null, 2)}`, 'COMMENT_TWEET');
+        
+        if (!tweetData.tweetId) {
+          sendError(res, 400, 'Tweet data must include tweetId');
+          return;
+        }
+        
+        const input: CommentActionInput = {
+          tweetData,
+          comment,
+          behaviorType,
+          content: body.content || tweetData.content
+        };
+        
+        // 🔍 DEBUG: Log final input being sent to action handler
+        logWithTimestamp('🚀 FINAL INPUT TO COMMENT ACTION HANDLER (LEGACY):', 'COMMENT_TWEET');
+        logWithTimestamp(`   📤 Input: ${JSON.stringify(input, null, 2)}`, 'COMMENT_TWEET');
+        
+        logWithTimestamp(`Comment action on tweet ${tweetData.tweetId} by @${tweetData.authorHandle || 'unknown'}`, 'COMMENT_TWEET');
+        logWithTimestamp(`📝 Content preview: "${(input.content || '').substring(0, 80)}${(input.content || '').length > 80 ? '...' : ''}"`, 'COMMENT_TWEET');
+        
+        const browser = await getBrowserConnection();
+        const result: CommentActionResult = await performCommentAction(browser, input);
+        
+        if (result.success) {
+          logWithTimestamp(`Successfully commented on tweet ${result.tweetId} using method: ${result.method}`, 'COMMENT_TWEET');
+          sendSuccess(res, {
+            success: true,
+            action: result.action,
+            tweetId: result.tweetId,
+            tweetUrl: result.tweetUrl,
+            comment: result.comment,
+            method: result.method,
+            processingTime: result.processingTime,
+            message: `Successfully commented on tweet via ${result.method}`
+          }, 'COMMENT_TWEET');
+        } else {
+          logWithTimestamp(`Failed to comment on tweet ${tweetData.tweetId}: ${result.error}`, 'COMMENT_TWEET');
+          sendError(res, 400, result.error || 'Failed to comment on tweet - tried all methods');
+        }
+        
+      } else {
+        sendError(res, 400, 'Either tweetId (with optional content, url, authorHandle) or legacy tweetData object must be provided for comment requests');
+      }
+    }
+    
+  } catch (error: any) {
+    logWithTimestamp(`Error in comment-tweet request: ${error.message}`, 'COMMENT_TWEET');
+    sendError(res, 500, error.message);
+  }
+}
+
 // Status handler
 async function handleStatus(): Promise<any> {
   const browser = await getBrowserConnection().catch(() => null);
@@ -1275,6 +1471,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       
     } else if (pathname === '/api/retweet-post' && (method === 'GET' || method === 'POST')) {
       await handleRetweetPostRequest(req, res);
+      
+    } else if (pathname === '/api/comment-tweet') {
+      await handleCommentTweetRequest(req, res);
+      
+    } else if (pathname === '/api/comment-tweet' && (method === 'GET' || method === 'POST')) {
+      await handleCommentTweetRequest(req, res);
       
     } else if (pathname === '/api/comment' && method === 'POST') {
       const body = await parseBody(req);
