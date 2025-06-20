@@ -1,5 +1,3 @@
-// home-feed-fetcher.ts - Module to fetch posts from home timeline for retweeting
-
 import * as puppeteer from 'puppeteer-core';
 import { logWithTimestamp, saveScreenshot } from '../shared/utilities';
 import { humanDelay, humanScroll } from '../shared/human-actions';
@@ -25,6 +23,7 @@ export interface HomeFeedTweetData {
   mentions: string[];
   mediaCount: number;
   position: number; // Position in the feed for identification
+  hasRetweeted: boolean; // Track if we already retweeted this
 }
 
 export interface HomeFeedInput {
@@ -59,20 +58,44 @@ function extractNumber(text: string): number {
   return Math.round(number);
 }
 
+// Helper function to check if we already retweeted a tweet
+async function checkIfRetweeted(page: puppeteer.Page, tweetElement: any): Promise<boolean> {
+  try {
+    // Check if the retweet button shows active state (already retweeted)
+    const hasRetweeted = await page.evaluate((tweet) => {
+      const retweetButton = tweet.querySelector('[data-testid="retweet"]');
+      if (!retweetButton) return false;
+      
+      // Check if the retweet button has active styling (green color or pressed state)
+      const isActive = retweetButton.querySelector('svg path[fill*="rgb(0, 186, 124)"]') || 
+                       retweetButton.querySelector('svg path[fill*="rgb(23, 191, 99)"]') ||
+                       retweetButton.closest('[role="button"]')?.getAttribute('aria-pressed') === 'true' ||
+                       retweetButton.getAttribute('aria-pressed') === 'true';
+      
+      return !!isActive;
+    }, tweetElement);
+    
+    return hasRetweeted;
+  } catch (error) {
+    logWithTimestamp(`Error checking retweet status: ${error}`, 'RETWEET_FEED');
+    return false; // Default to false if we can't determine
+  }
+}
+
 export async function getHomeFeedTweets(
   browser: puppeteer.Browser, 
   input: HomeFeedInput = {}
 ): Promise<HomeFeedResult> {
   const { scrollTime = 20000, behaviorType } = input;
   
-  // Randomly choose 1-3 tweets to select for retweeting
-  const targetCount = Math.floor(Math.random() * 3) + 1; // 1, 2, or 3
+  // ALWAYS select exactly ONE tweet at a time for retweeting
+  const targetCount = 1;
   
   const pages = await browser.pages();
   const page = pages[0] || await browser.newPage();
   
   const startTime = Date.now();
-  logWithTimestamp(`Starting home timeline browsing for retweet - will select ${targetCount} tweets`, 'RETWEET_FEED');
+  logWithTimestamp(`Starting home timeline browsing for retweet - will select ${targetCount} tweet`, 'RETWEET_FEED');
   
   // Get behavior pattern
   const behavior = getBehaviorOrDefault(behaviorType);
@@ -90,20 +113,16 @@ export async function getHomeFeedTweets(
     
     // Check if we're on home timeline
     const isOnHomePage = await page.evaluate(() => {
-      const currentUrl = window.location.href.toLowerCase();
-      return currentUrl.includes('/home') || currentUrl.includes('timeline');
+      const url = window.location.href;
+      return url.includes('/home') || url === 'https://x.com/' || url === 'https://twitter.com/';
     });
     
     if (!isOnHomePage) {
-      logWithTimestamp('Not on home timeline, navigation may have failed', 'RETWEET_FEED');
-      return {
-        success: false,
-        error: 'Failed to navigate to home timeline'
-      };
+      throw new Error('Not on home timeline - please navigate to Twitter home first');
     }
     
     logWithTimestamp('Successfully loaded home timeline', 'RETWEET_FEED');
-    await saveScreenshot(page, 'home_timeline_loaded_retweet.png', 'RETWEET_FEED');
+    await saveScreenshot(page, 'retweet_timeline_loaded.png', 'RETWEET_FEED');
     
     // Start human-like browsing behavior
     logWithTimestamp(`Starting ${scrollTime / 1000}s human-like browsing with ${behavior.name} behavior...`, 'RETWEET_FEED');
@@ -111,8 +130,8 @@ export async function getHomeFeedTweets(
     const selectedTweets: HomeFeedTweetData[] = [];
     const seenTweetIds = new Set<string>();
     let scrollAttempts = 0;
-    const maxScrollAttempts = 8;
-    const includeRetweets = true; // Always include retweets for variety
+    const maxScrollAttempts = 10;
+    const includeRetweets = true; // Include retweets for variety
     
     const browsingStartTime = Date.now();
     
@@ -123,236 +142,240 @@ export async function getHomeFeedTweets(
     ) {
       scrollAttempts++;
       
-      // Extract available tweets from current view
+      // Extract available tweets from current view using the same robust method as comment implementation
       const currentTweets = await page.evaluate((includeRTs: boolean) => {
-        const extractedTweets: any[] = [];
+        const tweets: any[] = [];
         
-        // Find all tweet containers
-        const tweetElements = document.querySelectorAll('article[data-testid="tweet"], div[data-testid="cellInnerDiv"] article');
+        // Find all tweet articles (same selector as comment implementation)
+        const tweetElements = document.querySelectorAll('article[data-testid="tweet"]');
         
         for (let i = 0; i < tweetElements.length; i++) {
+          const tweet = tweetElements[i];
+          
           try {
-            const element = tweetElements[i] as HTMLElement;
-            
-            // Extract tweet ID and URL
+            // Extract tweet ID from the tweet structure
             let tweetId = '';
-            let tweetUrl = '';
-            
-            // Look for status links
-            const statusLinks = element.querySelectorAll('a[href*="/status/"]');
-            for (const link of statusLinks) {
-              const href = (link as HTMLElement).getAttribute('href') || '';
-              const idMatch = href.match(/\/status\/(\d+)/);
-              if (idMatch) {
-                tweetId = idMatch[1];
-                tweetUrl = href.startsWith('http') ? href : `https://x.com${href}`;
-                break;
-              }
+            const tweetLinks = tweet.querySelectorAll('a[href*="/status/"]');
+            if (tweetLinks.length > 0) {
+              const href = tweetLinks[0].getAttribute('href') || '';
+              const match = href.match(/\/status\/(\d+)/);
+              if (match) tweetId = match[1];
             }
             
-            if (!tweetUrl || !tweetId) continue;
+            if (!tweetId) continue;
             
-            // Extract author information
-            let author = '';
-            let authorHandle = '';
+            // Extract author information (improved from like implementation)
+            const authorElement = tweet.querySelector('[data-testid="User-Name"]');
+            if (!authorElement) continue;
             
-            const authorElements = element.querySelectorAll('[data-testid="User-Name"]');
-            for (const authorEl of authorElements) {
-              const nameSpan = authorEl.querySelector('span[dir="ltr"]');
-              const displayNameSpan = authorEl.querySelector('span:not([dir])');
-              
-              if (nameSpan && nameSpan.textContent) {
-                const handle = nameSpan.textContent.trim().replace('@', '');
-                authorHandle = handle;
-              }
-              
-              if (displayNameSpan && displayNameSpan.textContent) {
-                author = displayNameSpan.textContent.trim();
-              }
-              
-              if (authorHandle && author) break;
-            }
+            const authorLinks = authorElement.querySelectorAll('a');
+            if (authorLinks.length < 2) continue;
             
-            // Check if this is a retweet
-            let isRetweet = false;
-            let originalAuthor = '';
+            const author = authorLinks[0].textContent?.trim() || '';
+            const authorHandle = authorLinks[1].textContent?.replace('@', '') || '';
             
-            const retweetIndicators = element.querySelectorAll('[data-testid="socialContext"]');
-            for (const indicator of retweetIndicators) {
-              if (indicator.textContent && indicator.textContent.includes('retweeted')) {
-                isRetweet = true;
-                break;
-              }
-            }
+            if (!author || !authorHandle) continue;
             
-            // Skip retweets if not wanted
-            if (isRetweet && !includeRTs) continue;
+            // Extract tweet content
+            const contentElement = tweet.querySelector('[data-testid="tweetText"]');
+            const content = contentElement?.textContent?.trim() || '';
             
-            // Extract content
-            let content = '';
-            const primaryTextElement = element.querySelector('[data-testid="tweetText"]');
-            if (primaryTextElement && primaryTextElement.textContent) {
-              content = primaryTextElement.textContent.trim();
-            }
+            // Extract engagement metrics (improved from like implementation)
+            const replyElement = tweet.querySelector('[data-testid="reply"]');
+            const retweetElement = tweet.querySelector('[data-testid="retweet"]');
+            const likeElement = tweet.querySelector('[data-testid="like"]');
+            const viewElement = tweet.querySelector('[data-testid="analytics"]');
             
-            // Extract timestamps
-            let timestamp = '';
-            let relativeTime = '';
-            
-            const timeElement = element.querySelector('time');
-            if (timeElement) {
-              timestamp = timeElement.getAttribute('datetime') || '';
-              relativeTime = timeElement.textContent || '';
-            }
-            
-            // Extract engagement metrics
+            // Extract numeric values from engagement buttons
             let likes = 0;
             let retweets = 0;
             let replies = 0;
             let views = 0;
             
-            const engagementGroup = element.querySelector('[role="group"]');
+            // Enhanced metric extraction
+            const engagementGroup = tweet.querySelector('[role="group"]');
             if (engagementGroup) {
               const buttons = engagementGroup.querySelectorAll('[role="button"]');
+              
               for (const button of buttons) {
-                const buttonText = button.textContent || '';
                 const ariaLabel = button.getAttribute('aria-label') || '';
+                const buttonText = (button.textContent || '').trim();
+                const testId = button.getAttribute('data-testid') || '';
                 
-                if (ariaLabel.includes('like') || ariaLabel.includes('Like')) {
-                  const match = buttonText.match(/(\d+(?:\.\d+)?[km]?)/i);
-                  if (match) likes = extractNumber(match[1]);
+                let count = 0;
+                const numberMatch = (ariaLabel + ' ' + buttonText).match(/(\d+[\d.,]*[km]?)/i);
+                if (numberMatch) {
+                  const cleanText = numberMatch[1].replace(/[,\s]/g, '').toLowerCase();
+                  const match = cleanText.match(/(\d+(?:\.\d+)?)(k|m)?/);
+                  
+                  if (match) {
+                    const number = parseFloat(match[1]);
+                    const suffix = match[2];
+                    
+                    if (suffix === 'k') count = Math.round(number * 1000);
+                    else if (suffix === 'm') count = Math.round(number * 1000000);
+                    else count = Math.round(number);
+                  }
                 }
                 
-                if (ariaLabel.includes('retweet') || ariaLabel.includes('Repost')) {
-                  const match = buttonText.match(/(\d+(?:\.\d+)?[km]?)/i);
-                  if (match) retweets = extractNumber(match[1]);
-                }
-                
-                if (ariaLabel.includes('repl') || ariaLabel.includes('Comment')) {
-                  const match = buttonText.match(/(\d+(?:\.\d+)?[km]?)/i);
-                  if (match) replies = extractNumber(match[1]);
-                }
-                
-                if (ariaLabel.includes('view') || ariaLabel.includes('View')) {
-                  const match = buttonText.match(/(\d+(?:\.\d+)?[km]?)/i);
-                  if (match) views = extractNumber(match[1]);
+                if (ariaLabel.toLowerCase().includes('like') || testId.includes('like')) {
+                  likes = count;
+                } else if (ariaLabel.toLowerCase().includes('repost') || ariaLabel.toLowerCase().includes('retweet') || testId.includes('retweet')) {
+                  retweets = count;
+                } else if (ariaLabel.toLowerCase().includes('repl') || testId.includes('reply')) {
+                  replies = count;
+                } else if (ariaLabel.toLowerCase().includes('view') || testId.includes('view')) {
+                  views = count;
                 }
               }
             }
             
-            // Extract hashtags and mentions
-            const hashtags: string[] = [];
-            const mentions: string[] = [];
+            // Check if it's a retweet
+            const isRetweet = !!tweet.querySelector('[data-testid="socialContext"]');
             
-            const hashtagElements = element.querySelectorAll('a[href*="/hashtag/"]');
-            for (const hashEl of hashtagElements) {
-              const hashtagMatch = hashEl.getAttribute('href')?.match(/\/hashtag\/([^?]+)/);
-              if (hashtagMatch) {
-                hashtags.push(hashtagMatch[1]);
-              }
-            }
+            // Extract media information (same as comment implementation)
+            const images = Array.from(tweet.querySelectorAll('img[src*="media"], img[src*="pbs.twimg.com"]'))
+              .map(img => img.getAttribute('src'))
+              .filter(Boolean)
+              .filter(src => !src!.includes('profile'));
             
-            const mentionElements = element.querySelectorAll('a[href^="/"][href*="@"], a[href^="https://x.com/"][href*="@"]');
-            for (const mentionEl of mentionElements) {
-              const href = mentionEl.getAttribute('href') || '';
-              const mentionMatch = href.match(/\/([^?/]+)$/);
-              if (mentionMatch && mentionMatch[1].startsWith('@')) {
-                mentions.push(mentionMatch[1].substring(1));
-              }
-            }
+            const videos = Array.from(tweet.querySelectorAll('video, [data-testid="videoPlayer"]'))
+              .map((_, index) => `video_${index}`);
             
-            // Extract media info
-            const images: string[] = [];
-            const videos: string[] = [];
+            // Extract hashtags and mentions (improved from like implementation)
+            const hashtags = Array.from(tweet.querySelectorAll('a[href*="/hashtag/"]'))
+              .map(link => link.textContent?.replace('#', '') || '')
+              .filter(Boolean);
             
-            const mediaImages = element.querySelectorAll('img[src*="pbs.twimg.com"]');
-            for (const img of mediaImages) {
-              const src = (img as HTMLElement).getAttribute('src');
-              if (src) images.push(src);
-            }
+            const mentions = Array.from(tweet.querySelectorAll('a[href^="/"]'))
+              .map(link => {
+                const href = link.getAttribute('href') || '';
+                const match = href.match(/^\/([^\/]+)$/);
+                return match ? match[1] : '';
+              })
+              .filter(Boolean)
+              .filter(mention => !mention.startsWith('@'));
             
-            const mediaVideos = element.querySelectorAll('video, [data-testid="videoPlayer"]');
-            videos.push(...Array.from(mediaVideos).map((_, index) => `video_${index}`));
+            // Build complete URL
+            const url = `https://x.com/${authorHandle}/status/${tweetId}`;
             
-            extractedTweets.push({
+            // Extract timestamp information
+            const timeElement = tweet.querySelector('time');
+            const timestamp = timeElement?.getAttribute('datetime') || new Date().toISOString();
+            const relativeTime = timeElement?.textContent || '';
+            
+            // Create tweet data object with all required information
+            const tweetData = {
               tweetId,
               content,
               author,
               authorHandle,
               timestamp,
               relativeTime,
-              url: tweetUrl,
+              url,
               likes,
               retweets,
               replies,
-              views,
+              views: views || undefined,
               isRetweet,
-              originalAuthor,
+              originalAuthor: isRetweet ? author : undefined,
               images,
               videos,
               hashtags,
               mentions,
               mediaCount: images.length + videos.length,
-              position: i
-            });
+              position: i,
+              hasRetweeted: false // Will be checked separately
+            };
+            
+            // Only include tweets with complete information
+            if (tweetData.tweetId && tweetData.author && tweetData.authorHandle && tweetData.url) {
+              tweets.push(tweetData);
+            }
             
           } catch (error) {
-            console.log('Error extracting tweet:', error);
+            console.log('Error extracting tweet data:', error);
             continue;
           }
         }
         
-        return extractedTweets;
+        return tweets;
       }, includeRetweets);
       
-      // Randomly select tweets from current view that we haven't seen before
+      // Filter out tweets we've already seen
       const newTweets = currentTweets.filter(tweet => !seenTweetIds.has(tweet.tweetId));
+      
+      // Check if we've already retweeted these tweets (CRITICAL FEATURE)
+      for (const tweet of newTweets) {
+        try {
+          // Find the tweet element again to check retweet status
+          const tweetElement = await page.$(`article[data-testid="tweet"]:has(a[href*="/status/${tweet.tweetId}"])`);
+          if (tweetElement) {
+            tweet.hasRetweeted = await checkIfRetweeted(page, tweetElement);
+          }
+        } catch (error) {
+          logWithTimestamp(`Error checking retweet status for tweet ${tweet.tweetId}: ${error}`, 'RETWEET_FEED');
+          tweet.hasRetweeted = false; // Default to false
+        }
+      }
+      
+      // Filter out tweets we've already retweeted and apply quality filters
+      const retweetCandidates = newTweets.filter(tweet => {
+        // Skip if already retweeted by us
+        if (tweet.hasRetweeted) return false;
+        
+        // Skip if content is too short (likely not substantial)
+        if (tweet.content.length < 15) return false;
+        
+        // Skip if it's a reply (starts with @)
+        if (tweet.content.startsWith('@')) return false;
+        
+        // Skip if already heavily retweeted (avoid spam)
+        if (tweet.retweets > 50000) return false;
+        
+        // Skip if it's our own tweet
+        // You might want to add logic to check if it's from the current user
+        
+        return true;
+      });
       
       // Mark all tweets as seen
       newTweets.forEach(tweet => seenTweetIds.add(tweet.tweetId));
       
-      // Randomly select some tweets to add to our selection
-      if (newTweets.length > 0 && selectedTweets.length < targetCount) {
-        // Filter out tweets that are not good candidates for retweeting
-        const retweetCandidates = newTweets.filter(tweet => {
-          // Skip if already heavily retweeted (avoid spam)
-          if (tweet.retweets > 10000) return false;
-          
-          // Skip if content is too short (likely not substantial)
-          if (tweet.content.length < 10) return false;
-          
-          // Skip if it's a reply (starts with @)
-          if (tweet.content.startsWith('@')) return false;
-          
-          return true;
-        });
-        
-        // Randomly select 1-2 tweets from current view (human-like selection)
-        const selectCount = Math.min(
-          Math.floor(Math.random() * 2) + 1, // 1 or 2 tweets
-          retweetCandidates.length,
-          targetCount - selectedTweets.length
-        );
-        
-        // Shuffle and select
-        const shuffled = retweetCandidates.sort(() => Math.random() - 0.5);
-        const selected = shuffled.slice(0, selectCount);
+      // Select exactly ONE tweet if we have candidates and haven't selected one yet
+      if (retweetCandidates.length > 0 && selectedTweets.length < targetCount) {
+        // Randomly select ONE tweet (human-like selection)
+        const shuffled = retweetCandidates.sort(() => 0.5 - Math.random());
+        const selected = shuffled.slice(0, 1); // Always take just ONE
         
         selectedTweets.push(...selected);
         
         logWithTimestamp(
-          `Scroll ${scrollAttempts}: Selected ${selected.length} tweets (${selectedTweets.length}/${targetCount} total). Found ${newTweets.length} new tweets.`, 
+          `🎯 Selected 1 tweet for retweeting: "${selected[0].content.substring(0, 50)}..." by @${selected[0].authorHandle}`, 
+          'RETWEET_FEED'
+        );
+        logWithTimestamp(
+          `📊 Tweet metrics - Likes: ${selected[0].likes}, Retweets: ${selected[0].retweets}, Replies: ${selected[0].replies}`, 
           'RETWEET_FEED'
         );
         
-        // Human-like pause after selecting tweets (reading/deciding)
-        await humanDelay(behavior, { min: 1500, max: 3000 });
+        // Human-like pause after selecting tweet (reading/deciding)
+        await humanDelay(behavior, { min: 2000, max: 4000 });
+        
+        // Break out of loop since we found our target
+        break;
       } else {
-        logWithTimestamp(`Scroll ${scrollAttempts}: No new suitable tweets to select from. Found ${newTweets.length} new tweets.`, 'RETWEET_FEED');
+        logWithTimestamp(
+          `No suitable unretweeted tweets found in current view (${newTweets.length} total, ${newTweets.filter(t => t.hasRetweeted).length} already retweeted)`, 
+          'RETWEET_FEED'
+        );
       }
       
-      // Human-like scrolling if we need more tweets
+      // Human-like scrolling if we need to find a tweet
       if (selectedTweets.length < targetCount && scrollAttempts < maxScrollAttempts) {
+        await humanDelay(behavior, { min: 1500, max: 3000 });
+        
+        // Human-like scrolling using the same method as other implementations
         await humanScroll(page, 3000, behavior, async (filename: string) => {
           await saveScreenshot(page, filename, 'RETWEET_FEED');
         });
@@ -369,12 +392,20 @@ export async function getHomeFeedTweets(
     }
     
     const processingTime = `${(Date.now() - startTime) / 1000}s`;
-    logWithTimestamp(
-      `Human browsing complete! Selected ${selectedTweets.length} tweets for retweeting in ${processingTime}`, 
-      'RETWEET_FEED'
-    );
     
-    await saveScreenshot(page, 'home_timeline_browsing_complete_retweet.png', 'RETWEET_FEED');
+    if (selectedTweets.length > 0) {
+      logWithTimestamp(
+        `✅ Successfully selected ${selectedTweets.length} tweet for retweeting in ${processingTime}`, 
+        'RETWEET_FEED'
+      );
+    } else {
+      logWithTimestamp(
+        `⚠️ No suitable tweets found for retweeting in ${processingTime}`, 
+        'RETWEET_FEED'
+      );
+    }
+    
+    await saveScreenshot(page, 'retweet_timeline_browsing_complete.png', 'RETWEET_FEED');
     
     return {
       success: true,
@@ -389,7 +420,7 @@ export async function getHomeFeedTweets(
     
     // Save error screenshot
     try {
-      await saveScreenshot(page, 'home_timeline_error_retweet.png', 'RETWEET_FEED');
+      await saveScreenshot(page, 'retweet_timeline_error.png', 'RETWEET_FEED');
     } catch (screenshotError) {
       logWithTimestamp('Could not save error screenshot', 'RETWEET_FEED');
     }
